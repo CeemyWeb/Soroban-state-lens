@@ -1,4 +1,7 @@
 import { createDecoderWorkerSafe } from '../workers/createDecoderWorkerSafe'
+import { withWorkerPingTimeout } from '../workers/withWorkerPingTimeout'
+
+const DECODER_PING_TIMEOUT_MS = 5_000
 
 /**
  * Probe the decoder worker during startup and handle failures gracefully.
@@ -8,10 +11,13 @@ import { createDecoderWorkerSafe } from '../workers/createDecoderWorkerSafe'
 export async function probeDecoderWorker(): Promise<void> {
   try {
     const worker = await createDecoderWorkerSafe()
-    // Attach rejection handler to the ping promise
-    void worker.ping().catch((err) => {
+    try {
+      await withWorkerPingTimeout(worker, DECODER_PING_TIMEOUT_MS)
+    } catch (err) {
       console.warn('[App] Decoder worker ping failed:', err)
-    })
+    } finally {
+      worker.terminate()
+    }
   } catch (err) {
     // Normalized initialization failure
     console.warn('[App] Decoder worker initialization failed:', err)

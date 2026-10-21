@@ -8,10 +8,10 @@ import type { GetLedgerEntriesResult } from '../../lib/network/getLedgerEntries'
 
 const mockGetLedgerEntries = vi.fn()
 const mockDecodeScVal = vi.fn()
-const mockTerminateDecoderWorkerSafe = vi.fn()
 const mockCreateDecoderWorkerSafe = vi.fn(() =>
   Promise.resolve({
     decodeScVal: mockDecodeScVal,
+    terminate: vi.fn(),
   }),
 )
 
@@ -21,7 +21,6 @@ vi.mock('../../lib/network/getLedgerEntries', () => ({
 
 vi.mock('../../workers/createDecoderWorkerSafe', () => ({
   createDecoderWorkerSafe: mockCreateDecoderWorkerSafe,
-  terminateDecoderWorkerSafe: mockTerminateDecoderWorkerSafe,
 }))
 
 describe('loadContract action', () => {
@@ -30,7 +29,6 @@ describe('loadContract action', () => {
     mockGetLedgerEntries.mockReset()
     mockDecodeScVal.mockReset()
     mockCreateDecoderWorkerSafe.mockClear()
-    mockTerminateDecoderWorkerSafe.mockReset()
   })
 
   it('loads, decodes, and stores entries on success', async () => {
@@ -393,7 +391,10 @@ describe('loadContract action', () => {
     const firstDecode = new Promise<unknown>((resolve) => {
       resolveFirstDecode = resolve
     })
-    const firstWorker = { decodeScVal: vi.fn().mockReturnValue(firstDecode) }
+    const firstWorker = {
+      decodeScVal: vi.fn().mockReturnValue(firstDecode),
+      terminate: vi.fn(),
+    }
     const latestWorker = {
       decodeScVal: vi.fn().mockResolvedValue({
         kind: 'primitive',
@@ -402,6 +403,7 @@ describe('loadContract action', () => {
         value: 'latest',
         raw: { switch: 'ScvString', value: 'new' },
       }),
+      terminate: vi.fn(),
     }
 
     mockCreateDecoderWorkerSafe
@@ -644,7 +646,18 @@ describe('loadContract action', () => {
     const failedWorker = {
       decodeScVal: vi
         .fn()
-        .mockRejectedValue(new Error('Decoder worker stopped')),
+        .mockResolvedValueOnce({
+          kind: 'primitive',
+          path: [],
+          scType: 'symbol',
+          value: 'first-key',
+          raw: { switch: 'ScvSymbol', value: 'first-key' },
+        })
+        .mockResolvedValueOnce({
+          code: 'DECODE_WORKER_FAILED',
+          message: 'Decoder worker stopped',
+        }),
+      terminate: vi.fn(),
     }
     const recoveredWorker = {
       decodeScVal: vi.fn().mockResolvedValue({
@@ -654,6 +667,7 @@ describe('loadContract action', () => {
         value: 'recovered',
         raw: { switch: 'ScvString', value: 'recovered' },
       }),
+      terminate: vi.fn(),
     }
     mockCreateDecoderWorkerSafe
       .mockImplementationOnce(() => Promise.resolve(failedWorker))
@@ -684,7 +698,7 @@ describe('loadContract action', () => {
       value: 'recovered',
     })
     expect(mockCreateDecoderWorkerSafe).toHaveBeenCalledTimes(2)
-    expect(mockTerminateDecoderWorkerSafe).toHaveBeenCalledWith(failedWorker)
-    expect(mockTerminateDecoderWorkerSafe).toHaveBeenCalledWith(recoveredWorker)
+    expect(failedWorker.terminate).toHaveBeenCalledOnce()
+    expect(recoveredWorker.terminate).toHaveBeenCalledOnce()
   })
 })

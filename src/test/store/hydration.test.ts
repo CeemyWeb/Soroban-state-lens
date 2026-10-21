@@ -9,7 +9,9 @@ import {
   mergeNetworkConfig,
   sanitizeSnapshots,
 } from '../../store/persistence'
-import { DEFAULT_NETWORKS } from '../../store/types'
+import { diffSnapshotEntries } from '../../lib/diff/diffSnapshotEntries'
+import { ByteDisplayMode, DEFAULT_NETWORKS } from '../../store/types'
+import { formatScBytesByPreference } from '../../lib/format/formatScBytesByPreference'
 import type { LedgerEntry } from '../../store/types'
 
 // Simple localStorage mock
@@ -192,6 +194,68 @@ describe('LensStore Hydration', () => {
     })
   })
 
+  it('restores contract snapshots only from their own network bucket after reload', async () => {
+    const createEntry = (value: number) => ({
+      key: 'value-key',
+      contractId: 'C1',
+      type: 'ContractData' as const,
+      value,
+      lastModifiedLedger: value,
+    })
+
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.testnet)
+    useLensStore
+      .getState()
+      .addSnapshot('C1', { 'value-key': createEntry(42) }, 42, 'Testnet')
+    useLensStore.getState().addSnapshot(
+      'OtherContract',
+      {
+        other: {
+          ...createEntry(7),
+          key: 'other',
+          contractId: 'OtherContract',
+        },
+      },
+      7,
+      'Other testnet contract',
+    )
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.mainnet)
+    useLensStore
+      .getState()
+      .addSnapshot('C1', { 'value-key': createEntry(99) }, 99, 'Mainnet')
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+
+    useLensStore.setState({ snapshots: {} })
+    if (savedState === null) throw new Error('Snapshots were not persisted')
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    expect(
+      useLensStore.getState().getSnapshots('C1')[0]?.ledgerData,
+    ).toMatchObject({
+      'value-key': { value: 99 },
+    })
+
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.testnet)
+    expect(
+      useLensStore.getState().getSnapshots('C1')[0]?.ledgerData,
+    ).toMatchObject({
+      'value-key': { value: 42 },
+    })
+    expect(
+      useLensStore.getState().getSnapshots('OtherContract')[0]?.ledgerData,
+    ).toMatchObject({ other: { value: 7 } })
+
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.mainnet)
+    expect(
+      useLensStore.getState().getSnapshots('C1')[0]?.ledgerData,
+    ).toMatchObject({
+      'value-key': { value: 99 },
+    })
+  })
+
   it('persists a decoded map entry with key metadata and its child value', async () => {
     const scVal = xdr.ScVal.scvMap([
       new xdr.ScMapEntry({
@@ -237,6 +301,103 @@ describe('LensStore Hydration', () => {
           value: { kind: 'primitive', scType: 'u32', value: 7 },
         },
       ],
+    })
+  })
+
+  it('round-trips byte values including zero bytes and preserves display previews', async () => {
+    const bytes = [0, 1, 255]
+    const before = {
+      hex: formatScBytesByPreference(bytes, ByteDisplayMode.HEX),
+      base64: formatScBytesByPreference(bytes, ByteDisplayMode.BASE64),
+    }
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        bytes: {
+          key: 'bytes',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: bytes,
+          lastModifiedLedger: 9,
+        },
+      },
+      10,
+      'Byte fixture',
+    )
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+    if (savedState === null)
+      throw new Error('Byte snapshot state was not saved')
+    expect(savedState).toContain('"value":[0,1,255]')
+
+    useLensStore.setState({ snapshots: {} })
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    const restoredValue = useLensStore.getState().getSnapshots('C1')[0]
+      ?.ledgerData.bytes?.value
+    expect(Array.isArray(restoredValue)).toBe(true)
+    if (!Array.isArray(restoredValue))
+      throw new Error('Byte snapshot entry was not restored')
+    expect(formatScBytesByPreference(restoredValue, ByteDisplayMode.HEX)).toBe(
+      before.hex,
+    )
+    expect(
+      formatScBytesByPreference(restoredValue, ByteDisplayMode.BASE64),
+    ).toBe(before.base64)
+    expect(before).toEqual({ hex: '0x0001ff', base64: 'AAH/' })
+  })
+
+  it('keeps one 42-to-43 modified entry after snapshot reload', async () => {
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        value: {
+          key: 'value',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: 42,
+          lastModifiedLedger: 9,
+        },
+      },
+      10,
+      'Value 42',
+    )
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        value: {
+          key: 'value',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: 43,
+          lastModifiedLedger: 10,
+        },
+      },
+      11,
+      'Value 43',
+    )
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+    if (savedState === null) throw new Error('Snapshot pair was not saved')
+    useLensStore.setState({ snapshots: {} })
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    const snapshots = useLensStore.getState().getSnapshots('C1')
+    expect(snapshots).toHaveLength(2)
+    const diff = diffSnapshotEntries(
+      snapshots[0].ledgerData,
+      snapshots[1].ledgerData,
+    )
+    expect(diff).toHaveLength(1)
+    expect(diff[0]).toMatchObject({
+      key: 'value',
+      status: 'modified',
+      prevEntry: { value: 42 },
+      nextEntry: { value: 43 },
     })
   })
 
@@ -429,5 +590,134 @@ describe('LensStore Hydration', () => {
 
     await useLensStore.persist.rehydrate()
     expect(useLensStore.getState().watchlist).toEqual({})
+  })
+
+  it('migrates version-1 scalar snapshots without changing snapshot identity', async () => {
+    const snapshot = {
+      id: 'snapshot-legacy-42',
+      contractId: 'C_LEGACY',
+      timestamp: 42,
+      ledgerData: {
+        'C_LEGACY::ContractData::counter': {
+          key: 'C_LEGACY::ContractData::counter',
+          contractId: 'C_LEGACY',
+          type: 'ContractData',
+          value: {
+            kind: 'primitive',
+            path: [],
+            scType: 'u32',
+            value: 42,
+            raw: { switch: 'ScvU32', value: 42 },
+          },
+          lastModifiedLedger: 10,
+          rawXdr: 'legacy-xdr',
+        },
+      },
+    }
+    localStorage.setItem(
+      NETWORK_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          networkConfig: { kind: 'preset', networkId: 'testnet' },
+          snapshots: { C_LEGACY: [snapshot] },
+        },
+        version: 1,
+      }),
+    )
+
+    await useLensStore.persist.rehydrate()
+
+    const migrated = useLensStore.getState().getSnapshots('C_LEGACY')[0]
+    expect(migrated).toBeDefined()
+    expect(migrated.id).toBe(snapshot.id)
+    expect(migrated.ledgerData).toEqual(snapshot.ledgerData)
+    expect(useLensStore.getState().networkConfig).toEqual(
+      DEFAULT_NETWORKS.testnet,
+    )
+  })
+
+  it('rejects snapshot data from an unrecognized future version', async () => {
+    localStorage.setItem(
+      NETWORK_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          networkConfig: { kind: 'preset', networkId: 'testnet' },
+          snapshots: {
+            C_FUTURE: [
+              {
+                id: 'future-snapshot',
+                contractId: 'C_FUTURE',
+                timestamp: 1,
+                entries: {},
+              },
+            ],
+          },
+        },
+        version: 999,
+      }),
+    )
+
+    await useLensStore.persist.rehydrate()
+
+    expect(useLensStore.getState().snapshots).toEqual({})
+    expect(useLensStore.getState().networkConfig).toEqual(
+      DEFAULT_NETWORKS.futurenet,
+    )
+  })
+
+  it('persists and rehydrates a decoded vector snapshot with its ordered tree', async () => {
+    const xdrValue = xdr.ScVal.scvVec([
+      xdr.ScVal.scvU32(7),
+      xdr.ScVal.scvU32(9),
+    ])
+    const value = await decoderWorkerApi.decodeScVal({
+      xdr: xdrValue.toXDR('base64'),
+    })
+    if (isDecoderWorkerError(value)) {
+      throw new Error(value.message)
+    }
+
+    useLensStore.getState().addSnapshot(
+      'C_VECTOR',
+      {
+        vector: {
+          key: 'vector',
+          contractId: 'C_VECTOR',
+          type: 'ContractData',
+          value,
+          lastModifiedLedger: 1,
+          rawXdr: xdrValue.toXDR('base64'),
+        },
+      },
+      1,
+    )
+
+    const persistedJson = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(persistedJson).not.toBeNull()
+    useLensStore.setState({ snapshots: {} })
+    if (persistedJson) {
+      localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, persistedJson)
+    }
+    await useLensStore.persist.rehydrate()
+
+    const rehydratedSnapshot = useLensStore
+      .getState()
+      .getSnapshots('C_VECTOR')[0]
+    expect(rehydratedSnapshot).toBeDefined()
+    const entry = rehydratedSnapshot.ledgerData.vector
+    expect(entry.value).toMatchObject({
+      kind: 'vec',
+      items: [
+        { kind: 'primitive', scType: 'u32', value: 7 },
+        { kind: 'primitive', scType: 'u32', value: 9 },
+      ],
+    })
+    if (typeof entry.value === 'object' && entry.value !== null) {
+      const vector = entry.value as { items: Array<{ path: unknown }> }
+      expect(vector.items.map((item) => item.path)).toEqual([
+        [{ type: 'index', index: 0 }],
+        [{ type: 'index', index: 1 }],
+      ])
+    }
   })
 })

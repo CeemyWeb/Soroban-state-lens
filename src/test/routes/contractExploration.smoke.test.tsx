@@ -61,6 +61,7 @@ vi.mock('../../workers/createDecoderWorkerSafe', () => ({
     Promise.resolve({
       decodeScVal: mockDecodeScVal,
       ping: vi.fn().mockResolvedValue({ status: 'pong' }),
+      terminate: vi.fn(),
     }),
   terminateDecoderWorkerSafe: vi.fn(),
 }))

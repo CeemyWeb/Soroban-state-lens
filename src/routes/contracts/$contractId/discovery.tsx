@@ -359,6 +359,11 @@ export function DiscoveryRoute() {
           type: access === 'read' ? 'Read-only' : 'Read-write',
         }),
       )
+      setSubmittedDraft({
+        functionName,
+        transaction: inputState.transaction,
+        arguments: inputState.arguments,
+      })
       setSimulatedFunction(requestedFunctionName.trim())
       setState(
         buildDiscoveryLoadState({
@@ -367,11 +372,6 @@ export function DiscoveryRoute() {
           requestedKeyCount: keys.length,
         }),
       )
-      setSubmittedDraft({
-        functionName,
-        transaction: inputState.transaction,
-        arguments: inputState.arguments,
-      })
     } finally {
       if (!controller.signal.aborted) {
         activeRequest.current = null

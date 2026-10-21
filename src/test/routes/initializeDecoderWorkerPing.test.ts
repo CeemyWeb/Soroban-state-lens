@@ -5,28 +5,37 @@ import { probeDecoderWorker } from '../../routes/initializeDecoderWorkerPing'
 describe('probeDecoderWorker', () => {
   it('handles ping rejection without throwing', async () => {
     const ping = vi.fn().mockRejectedValue(new Error('ping failed'))
-    const spy = vi.spyOn(workerModule, 'createDecoderWorkerSafe').mockResolvedValue({ ping } as any)
+    const terminate = vi.fn()
+    const spy = vi
+      .spyOn(workerModule, 'createDecoderWorkerSafe')
+      .mockResolvedValue({ ping, terminate } as any)
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await probeDecoderWorker()
+    await Promise.resolve()
 
     expect(warn).toHaveBeenCalled()
     expect(warn.mock.calls[0][0]).toContain('Decoder worker ping failed')
+    expect(terminate).toHaveBeenCalledOnce()
 
     warn.mockRestore()
     spy.mockRestore()
   })
 
   it('handles initialization rejection gracefully', async () => {
-    const spy = vi.spyOn(workerModule, 'createDecoderWorkerSafe').mockRejectedValue(new Error('init failed'))
+    const spy = vi
+      .spyOn(workerModule, 'createDecoderWorkerSafe')
+      .mockRejectedValue(new Error('init failed'))
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 
     await probeDecoderWorker()
 
     expect(warn).toHaveBeenCalled()
-    expect(warn.mock.calls[0][0]).toContain('Decoder worker initialization failed')
+    expect(warn.mock.calls[0][0]).toContain(
+      'Decoder worker initialization failed',
+    )
 
     warn.mockRestore()
     spy.mockRestore()
