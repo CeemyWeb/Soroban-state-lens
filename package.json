@@ -19,14 +19,19 @@
     "build": "vite build && tsc",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:browser": "playwright test",
+    "test:worker-browser": "node scripts/test-decoder-worker-browser.mjs",
     "lint": "eslint",
     "format": "prettier",
     "check": "prettier --write . && eslint --fix",
     "check:env": "node scripts/check-env.js",
+    "smoke:ledger-read": "node scripts/ledger-read-smoke.mjs",
+    "check:bundle-size": "node scripts/check-bundle-size.mjs",
     "issues:build": "node scripts/github-issues.mjs build",
     "issues:list": "node scripts/github-issues.mjs list",
     "issues:labels": "node scripts/github-issues.mjs labels",
-    "issues:publish": "node scripts/github-issues.mjs publish"
+    "issues:publish": "node scripts/github-issues.mjs publish",
+    "issues:parity": "node scripts/github-issues.mjs parity"
   },
   "dependencies": {
     "@stellar/design-system": "^3.2.7",
@@ -45,6 +50,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tanstack/devtools-vite": "^0.3.11",
     "@tanstack/eslint-config": "^0.3.0",
     "@testing-library/dom": "^10.4.0",
@@ -53,7 +59,9 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.4",
+    "esbuild": "^0.28.2",
     "jsdom": "^27.0.0",
+    "playwright": "^1.64.1",
     "prettier": "^3.5.3",
     "typescript": "^5.7.2",
     "vite": "^7.1.7",

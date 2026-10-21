@@ -15,6 +15,16 @@ function primitive(value: string): Node {
   }
 }
 
+function symbol(value: string): Node {
+  return {
+    kind: 'primitive',
+    path: [],
+    scType: 'symbol',
+    value,
+    raw: { switch: 'ScvSymbol' },
+  }
+}
+
 describe('flattenTree', () => {
   const tree: Node = {
     kind: 'map',
@@ -43,8 +53,33 @@ describe('flattenTree', () => {
     expect(rows[0]?.id).toBe('root')
   })
 
+  it('retains LedgerKey metadata only on the root row', () => {
+    const rows = flattenTree(
+      [
+        {
+          id: 'root',
+          label: 'root',
+          node: tree,
+          canonicalKey: 'original-key-xdr',
+          durability: 'Temporary',
+        },
+      ],
+      ['root'],
+    )
+
+    expect(rows[0]).toMatchObject({
+      canonicalKey: 'original-key-xdr',
+      durability: 'Temporary',
+    })
+    expect(rows[1]?.canonicalKey).toBeUndefined()
+    expect(rows[1]?.durability).toBeUndefined()
+  })
+
   it('shows direct descendants when root expanded', () => {
-    const rows = flattenTree([{ id: 'root', label: 'root', node: tree }], ['root'])
+    const rows = flattenTree(
+      [{ id: 'root', label: 'root', node: tree }],
+      ['root'],
+    )
     expect(rows.map((row) => row.id)).toEqual([
       'root',
       'root.entry-0-key',
@@ -54,11 +89,62 @@ describe('flattenTree', () => {
     ])
   })
 
-  it('shows nested descendants deterministically', () => {
-    const rows = flattenTree([{ id: 'root', label: 'root', node: tree }], [
+  it('includes short symbol previews in map key labels only', () => {
+    const symbolMap: Node = {
+      kind: 'map',
+      path: [],
+      raw: { switch: 'ScvMap' },
+      entries: [
+        { key: symbol('admin'), value: primitive('first') },
+        { key: symbol('treasury'), value: primitive('second') },
+      ],
+    }
+
+    const rows = flattenTree(
+      [{ id: 'root', label: 'root', node: symbolMap }],
+      ['root'],
+    )
+
+    expect(rows.map((row) => row.label)).toEqual([
       'root',
-      'root.entry-0-value',
+      'entry[0].key (admin)',
+      'entry[0].value',
+      'entry[1].key (treasury)',
+      'entry[1].value',
     ])
+  })
+
+  it('falls back for unreadable keys and bounds long previews', () => {
+    const previewMap: Node = {
+      kind: 'map',
+      path: [],
+      raw: { switch: 'ScvMap' },
+      entries: [
+        {
+          key: { kind: 'truncated', path: [], depth: 1 },
+          value: primitive('first'),
+        },
+        {
+          key: symbol('a-very-long-symbol-key-that-must-be-shortened'),
+          value: primitive('second'),
+        },
+      ],
+    }
+
+    const rows = flattenTree(
+      [{ id: 'root', label: 'root', node: previewMap }],
+      ['root'],
+    )
+
+    expect(rows[1]?.label).toBe('entry[0].key')
+    expect(rows[3]?.label).toBe('entry[1].key (a-very-long-symbol-key-…)')
+  })
+
+  it('shows nested descendants deterministically', () => {
+    const rows = flattenTree(
+      [{ id: 'root', label: 'root', node: tree }],
+      ['root', 'root.entry-0-value'],
+    )
 
     expect(rows.map((row) => row.id)).toEqual([
       'root',
@@ -73,8 +159,21 @@ describe('flattenTree', () => {
 
   it('supports marker and unsupported node kinds', () => {
     const roots: Array<{ id: string; label: string; node: Node }> = [
-      { id: 'unsupported', label: 'unsupported', node: { kind: 'unsupported', path: [], variant: 'X', raw: { switch: 'ScvX' } } },
-      { id: 'truncated', label: 'truncated', node: { kind: 'truncated', path: [], depth: 7 } },
+      {
+        id: 'unsupported',
+        label: 'unsupported',
+        node: {
+          kind: 'unsupported',
+          path: [],
+          variant: 'X',
+          raw: { switch: 'ScvX' },
+        },
+      },
+      {
+        id: 'truncated',
+        label: 'truncated',
+        node: { kind: 'truncated', path: [], depth: 7 },
+      },
     ]
 
     const rows = flattenTree(roots, [])

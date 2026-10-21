@@ -1,4 +1,7 @@
-import { createDecoderWorker } from './createDecoderWorker'
+import {
+  createDecoderWorker,
+  terminateDecoderWorker,
+} from './createDecoderWorker'
 import type * as Comlink from 'comlink'
 import type { DecoderWorkerApi } from '../types/decoder-worker'
 
@@ -28,4 +31,10 @@ export function createDecoderWorkerSafe(): Promise<
       new Error(`Failed to initialize decoder worker: ${message}`),
     )
   }
+}
+
+export function terminateDecoderWorkerSafe(
+  worker: Comlink.Remote<DecoderWorkerApi>,
+): void {
+  terminateDecoderWorker(worker)
 }

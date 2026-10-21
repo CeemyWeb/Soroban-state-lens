@@ -5,10 +5,17 @@ import {
   clearPersistedNetworkConfig,
   isValidNetworkConfig,
   mergeNetworkConfig,
+  sanitizeNetworkSnapshots,
+  sanitizeNetworkWatchlist,
+  sanitizeSnapshots,
   sanitizeWatchlist,
   serializeNetworkConfigForStorage,
 } from '../../store/persistence'
-import { DEFAULT_NETWORKS } from '../../store/types'
+import {
+  DEFAULT_NETWORKS,
+  DEFAULT_SNAPSHOT_RETENTION_LIMIT,
+} from '../../store/types'
+import { useLensStore } from '@/store/lensStore'
 
 // Simple localStorage mock for node environment
 const localStorageMock = (function () {
@@ -26,6 +33,13 @@ const localStorageMock = (function () {
     }),
   }
 })()
+
+const corruptHydrationFixtures: Array<unknown> = [
+  '{"networkConfig":',
+  [],
+  { networkConfig: { kind: 'custom', rpcUrl: 42 } },
+  { networkConfig: { kind: 'preset', networkId: 'unknown' }, watchlist: null },
+]
 
 // Mock window and localStorage globally for this test
 Object.defineProperty(global, 'window', { value: global, writable: true })
@@ -196,9 +210,21 @@ describe('persistence', () => {
       expect(result.networkConfig).toEqual(DEFAULT_NETWORK_CONFIG)
     })
 
+    it.each(corruptHydrationFixtures)(
+      'falls back safely for corrupt hydration fixture %#',
+      (persistedState) => {
+        expect(() =>
+          mergeNetworkConfig(persistedState, currentState),
+        ).not.toThrow()
+        expect(
+          mergeNetworkConfig(persistedState, currentState).networkConfig,
+        ).toEqual(DEFAULT_NETWORK_CONFIG)
+      },
+    )
+
     it('hydrates a sanitized watchlist alongside a valid networkConfig', () => {
       const watchlist = {
-        'C1': [
+        C1: [
           {
             contractId: 'C1',
             keyPath: 'counter',
@@ -215,7 +241,7 @@ describe('persistence', () => {
       }
       const result = mergeNetworkConfig(persistedState, currentState)
       expect(result.networkConfig).toEqual(DEFAULT_NETWORKS.testnet)
-      expect(result.watchlist).toEqual(watchlist)
+      expect(result.watchlist).toEqual({ testnet: watchlist })
     })
 
     it('drops invalid watchlist entries on hydration without crashing', () => {
@@ -225,7 +251,7 @@ describe('persistence', () => {
           networkId: 'testnet',
         },
         watchlist: {
-          'C1': [
+          C1: [
             { contractId: 'C1', keyPath: 'ok', timestamp: 1 },
             { contractId: 'C1', keyPath: 'bad' },
             'not-an-item',
@@ -233,12 +259,14 @@ describe('persistence', () => {
             { contractId: 2, keyPath: 'bad', timestamp: 1 },
           ],
           '': [{ contractId: 'C1', keyPath: 'x', timestamp: 1 }],
-          'C2': 'not-an-array',
+          C2: 'not-an-array',
         },
       }
       const result = mergeNetworkConfig(persistedState, currentState)
       expect(result.watchlist).toEqual({
-        C1: [{ contractId: 'C1', keyPath: 'ok', timestamp: 1 }],
+        testnet: {
+          C1: [{ contractId: 'C1', keyPath: 'ok', timestamp: 1 }],
+        },
       })
     })
   })
@@ -252,9 +280,9 @@ describe('persistence', () => {
 
     it('drops contracts with empty keys or non-array items', () => {
       const result = sanitizeWatchlist({
-        'C1': [{ contractId: 'C1', keyPath: 'k', timestamp: 1 }],
+        C1: [{ contractId: 'C1', keyPath: 'k', timestamp: 1 }],
         '': [{ contractId: 'C1', keyPath: 'k', timestamp: 1 }],
-        'C2': 'nope',
+        C2: 'nope',
       })
       expect(result).toEqual({
         C1: [{ contractId: 'C1', keyPath: 'k', timestamp: 1 }],
@@ -275,9 +303,231 @@ describe('persistence', () => {
       expect(result.C1[0].keyPath).toBe('k')
     })
 
+    it('sorts hydrated pins newest first with a key-path tie break', () => {
+      const result = sanitizeWatchlist({
+        C1: [
+          { contractId: 'C1', keyPath: '/z', timestamp: 2 },
+          { contractId: 'C1', keyPath: '/b', timestamp: 3 },
+          { contractId: 'C1', keyPath: '/a', timestamp: 3 },
+        ],
+      })
+
+      expect(result.C1.map(({ keyPath }) => keyPath)).toEqual([
+        '/a',
+        '/b',
+        '/z',
+      ])
+    })
+
+    it('drops future-dated items while preserving present and past items', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-07-27T12:00:00.000Z'))
+
+      try {
+        const now = Date.now()
+
+        const result = sanitizeWatchlist({
+          C1: [
+            {
+              contractId: 'C1',
+              keyPath: 'present',
+              timestamp: now,
+            },
+            {
+              contractId: 'C1',
+              keyPath: 'past',
+              timestamp: now - 1,
+            },
+            {
+              contractId: 'C1',
+              keyPath: 'future',
+              timestamp: now + 1,
+            },
+          ],
+        })
+
+        expect(result).toEqual({
+          C1: [
+            {
+              contractId: 'C1',
+              keyPath: 'present',
+              timestamp: now,
+            },
+            {
+              contractId: 'C1',
+              keyPath: 'past',
+              timestamp: now - 1,
+            },
+          ],
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('omits the contract entirely when every item is future-dated', () => {
+      const now = Date.now()
+      const result = sanitizeWatchlist({
+        C1: [{ contractId: 'C1', keyPath: 'a', timestamp: now + 1000 }],
+      })
+      expect(result).toEqual({})
+    })
+
+    it('handles valid, future-dated, and malformed items together', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-07-27T12:00:00.000Z'))
+
+      try {
+        const now = Date.now()
+
+        const result = sanitizeWatchlist({
+          C1: [
+            { contractId: 'C1', keyPath: 'valid', timestamp: now - 100 },
+            { contractId: 'C1', keyPath: 'future', timestamp: now + 100 },
+            {
+              contractId: 'C1',
+              keyPath: 'bad-type',
+              timestamp: 'not-a-number',
+            },
+            null,
+          ],
+        })
+
+        expect(result).toEqual({
+          C1: [
+            {
+              contractId: 'C1',
+              keyPath: 'valid',
+              timestamp: now - 100,
+            },
+          ],
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('preserves an item added immediately before hydration', () => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-07-27T12:00:00.000Z'))
+
+      try {
+        useLensStore.setState({ watchlist: {} })
+
+        useLensStore.getState().addToWatchlist('C1', '/some/key')
+
+        const result = sanitizeNetworkWatchlist(
+          useLensStore.getState().watchlist,
+          useLensStore.getState().networkConfig.networkId,
+        )
+
+        expect(result.futurenet?.C1).toEqual([
+          {
+            contractId: 'C1',
+            keyPath: '/some/key',
+            timestamp: Date.now(),
+          },
+        ])
+      } finally {
+        useLensStore.setState({ watchlist: {} })
+        vi.useRealTimers()
+      }
+    })
+
     it('omits contracts whose items all failed validation', () => {
       const result = sanitizeWatchlist({ C1: [{ bad: true }] })
       expect(result).toEqual({})
+    })
+
+    it('keeps valid watchlist buckets separate for each network', () => {
+      const result = sanitizeNetworkWatchlist(
+        {
+          TESTNET: {
+            C1: [{ contractId: 'C1', keyPath: 'testnet', timestamp: 1 }],
+          },
+          FUTURENET: {
+            C1: [{ contractId: 'C1', keyPath: 'futurenet', timestamp: 2 }],
+          },
+        },
+        'mainnet',
+      )
+
+      expect(result).toEqual({
+        testnet: {
+          C1: [{ contractId: 'C1', keyPath: 'testnet', timestamp: 1 }],
+        },
+        futurenet: {
+          C1: [{ contractId: 'C1', keyPath: 'futurenet', timestamp: 2 }],
+        },
+      })
+    })
+
+    it('keeps valid snapshot buckets separate for each network', () => {
+      const snapshot = (contractId: string, id: string, ledgerSequence: number) => ({
+        id,
+        contractId,
+        timestamp: 1,
+        ledgerSequence,
+        ledgerData: {},
+      })
+      const result = sanitizeNetworkSnapshots(
+        {
+          TESTNET: { C1: [snapshot('C1', 'testnet', 1)] },
+          FUTURENET: { C1: [snapshot('C1', 'futurenet', 2)] },
+        },
+        'mainnet',
+      )
+
+      expect(result).toEqual({
+        testnet: { C1: [snapshot('C1', 'testnet', 1)] },
+        futurenet: { C1: [snapshot('C1', 'futurenet', 2)] },
+      })
+    })
+  })
+
+  describe('sanitizeSnapshots', () => {
+    it('drops malformed snapshots, sanitizes entries, and retains only the newest bounded set', () => {
+      const items = Array.from(
+        { length: DEFAULT_SNAPSHOT_RETENTION_LIMIT + 3 },
+        (_, index) => ({
+          id: `snapshot-${index}`,
+          contractId: 'C1',
+          timestamp: index + 1,
+          ledgerSequence: index,
+          ledgerData: {
+            key1: {
+              key: 'key1',
+              contractId: 'C1',
+              type: 'ContractData',
+              value: { count: index },
+              lastModifiedLedger: index,
+              decodeErrorReason: 'Decoder fallback used',
+            },
+            invalid: {
+              key: 'wrong-key',
+              contractId: 'C1',
+              type: 'ContractData',
+              value: null,
+              lastModifiedLedger: index,
+            },
+          },
+        }),
+      )
+
+      const sanitized = sanitizeSnapshots({
+        C1: [
+          ...items,
+          { id: 'future', contractId: 'C1', timestamp: Date.now() + 1000 },
+          { id: 'bad-ledger', contractId: 'C1', timestamp: 1, ledgerData: [] },
+        ],
+      })
+
+      expect(sanitized.C1).toHaveLength(DEFAULT_SNAPSHOT_RETENTION_LIMIT)
+      expect(sanitized.C1[0].id).toBe('snapshot-3')
+      expect(Object.keys(sanitized.C1[0].ledgerData)).toEqual(['key1'])
+      expect(sanitized.C1[0].ledgerData.key1.decodeErrorReason).toBe(
+        'Decoder fallback used',
+      )
     })
   })
 

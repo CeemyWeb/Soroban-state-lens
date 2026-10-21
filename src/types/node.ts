@@ -40,12 +40,22 @@ export function appendPath(base: Path, segment: PathSegment): Path {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal representation of an ScVal suitable for raw metadata.
- * Matches the structure produced by stellar-sdk XDR parsing.
+ * Plain data values suitable for structured cloning and worker transport.
+ */
+export type RawValue =
+  | null
+  | boolean
+  | number
+  | string
+  | Array<RawValue>
+  | { [key: string]: RawValue }
+
+/**
+ * Minimal plain representation of an ScVal suitable for raw metadata.
  */
 export interface RawScVal {
   switch: string
-  value?: unknown
+  value?: RawValue
 }
 
 // ---------------------------------------------------------------------------
@@ -64,6 +74,7 @@ export type PrimitiveKind =
   | 'i128'
   | 'u256'
   | 'i256'
+  | 'bytes'
   | 'string'
   | 'symbol'
   | 'void'
@@ -77,7 +88,7 @@ export interface PrimitiveNode {
   kind: 'primitive'
   path: Path
   scType: PrimitiveKind
-  value: boolean | number | string | null
+  value: boolean | number | string | Array<number> | null
   raw: RawScVal
 }
 
@@ -92,6 +103,8 @@ export interface VecNode {
   kind: 'vec'
   path: Path
   items: Array<Node>
+  childLimit?: number
+  omittedChildren?: number
   raw: RawScVal
 }
 
@@ -110,6 +123,8 @@ export interface MapNode {
   kind: 'map'
   path: Path
   entries: Array<MapEntryNode>
+  childLimit?: number
+  omittedChildren?: number
   raw: RawScVal
 }
 
@@ -170,6 +185,7 @@ export interface UnsupportedNode {
   kind: 'unsupported'
   path: Path
   variant: string
+  sourceType?: string
   raw: RawScVal
 }
 

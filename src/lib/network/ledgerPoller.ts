@@ -8,6 +8,8 @@ export interface LedgerHeadPollOptions {
   rpcConfig: RpcConfig
   intervalMs?: number
   onLedgerChange: (sequence: number) => void
+  onError?: (error: RpcError) => void
+  onRecovery?: () => void
 }
 
 const DEFAULT_INTERVAL_MS = 5000
@@ -28,40 +30,83 @@ export function startLedgerHeadPoll(
     rpcConfig,
     intervalMs = DEFAULT_INTERVAL_MS,
     onLedgerChange,
+    onError,
+    onRecovery,
   } = options
 
   let lastSequence: number | null = null
+  let hasFailed = false
   const stoppedRef = { current: false }
+  const inFlightRef = { current: false }
+  const requestControllerRef = { current: null as AbortController | null }
 
   const tick = async (): Promise<void> => {
     if (stoppedRef.current) return
+    if (inFlightRef.current) return
     // Skip RPC call while the tab is hidden; lastSequence is preserved so the
     // next visible tick can detect a sequence change correctly.
     if (document.visibilityState === 'hidden') return
 
-    const body = buildJsonRpcRequest('getLatestLedger', {}, toRpcRequestId())
-    const response = await callRpc<{ result?: LatestLedgerResult }>(
-      rpcConfig,
-      body,
-    )
+    inFlightRef.current = true
+    const requestController = new AbortController()
+    requestControllerRef.current = requestController
+    try {
+      const body = buildJsonRpcRequest('getLatestLedger', {}, toRpcRequestId())
+      let response: { result?: LatestLedgerResult } | RpcError
+      try {
+        response = await callRpc<{ result?: LatestLedgerResult }>(
+          rpcConfig,
+          body,
+          requestController.signal,
+        )
+      } catch (error) {
+        // A transient RPC failure must not terminate the polling loop.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- stop() can run while the RPC promise rejects
+        if (stoppedRef.current) return
+        hasFailed = true
+        onError?.({
+          message:
+            error instanceof Error ? error.message : 'RPC request failed',
+          code: 'UNKNOWN_ERROR',
+        })
+        return
+      }
 
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- stop() can run during await
-    if (stoppedRef.current) return
-    if (isRpcError(response)) return
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- stop() can run during await
+      if (stoppedRef.current) return
+      if (isRpcError(response)) {
+        hasFailed = true
+        onError?.(response)
+        return
+      }
 
-    const result = response.result
-    if (
-      result == null ||
-      typeof result !== 'object' ||
-      typeof result.sequence !== 'number'
-    ) {
-      return
-    }
+      const result = response.result
+      if (
+        result == null ||
+        typeof result !== 'object' ||
+        typeof result.sequence !== 'number' ||
+        !Number.isFinite(result.sequence) ||
+        !Number.isInteger(result.sequence) ||
+        result.sequence < 0
+      ) {
+        return
+      }
 
-    const { sequence } = result
-    if (lastSequence === null || sequence > lastSequence) {
-      lastSequence = sequence
-      onLedgerChange(sequence)
+      if (hasFailed) {
+        hasFailed = false
+        onRecovery?.()
+      }
+
+      const { sequence } = result
+      if (lastSequence === null || sequence > lastSequence) {
+        lastSequence = sequence
+        onLedgerChange(sequence)
+      }
+    } finally {
+      if (requestControllerRef.current === requestController) {
+        requestControllerRef.current = null
+      }
+      inFlightRef.current = false
     }
   }
 
@@ -97,6 +142,7 @@ export function startLedgerHeadPoll(
     if (timeoutId !== null) {
       clearTimeout(timeoutId)
     }
+    requestControllerRef.current?.abort()
     document.removeEventListener('visibilitychange', onVisibilityChange)
   }
 }

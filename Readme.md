@@ -20,7 +20,7 @@ Soroban stores data in the ledger as ScVal (Stellar Contract Values) within Cont
 
 - [Node.js](https://nodejs.org/) (v20+) — Use [nvm](https://github.com/nvm-sh/nvm) to manage versions
 - [Bun](https://bun.sh/) (v1.0+) — Fast all-in-one JavaScript runtime
-- [Rust](https://www.rust-lang.org/) (required for the Rust-based XDR decoder)
+
 - A running Soroban RPC node (or use the public Testnet/Mainnet endpoints)
 
 ### **Stack & Architecture**
@@ -47,6 +47,25 @@ Soroban stores data in the ledger as ScVal (Stellar Contract Values) within Cont
 4. Start the development server:  
    `npm run dev` or `bun run dev`
 
+### **Read-only Ledger RPC Smoke Check**
+
+To verify a live RPC endpoint with one known-present and one known-absent base64
+LedgerKey XDR, run:
+
+```sh
+bun run smoke:ledger-read -- <rpc-url> <present-ledger-key-xdr> <absent-ledger-key-xdr>
+```
+
+This command only calls `getLedgerEntries`, verifies both key results and the
+returned latest ledger, and exits with an error for RPC failures such as
+`-32602`. It never submits transactions.
+
+### **Browser Worker Regression**
+
+Install Chromium once with `bunx playwright install chromium`, then run
+`bun run test:browser` to exercise nested contract-data values through a real
+Comlink worker in the browser.
+
 ## **🛠 Project Architecture**
 
 The project is split into three main layers:
@@ -57,12 +76,21 @@ The project is split into three main layers:
 
 ## **🗺 Roadmap**
 
-- \[ \] **Phase 1:** Basic ScVal to JSON decoding and tree view.
-- \[ \] **Phase 2:** Support for persistent storage types (Persistent vs. Temporary vs. Instance).
-- \[ \] **Phase 3:** Desktop Distribution — Implementing **Tauri** to provide a standalone cross-platform app.
-- \[ \] **Phase 4:** Integration with stellar-cli to launch the lens directly from a local environment.
+The backlog is organized around the [phase:0](https://github.com/Vynix-Labs/Soroban-state-lens/labels/phase%3A0) through [phase:7](https://github.com/Vynix-Labs/Soroban-state-lens/labels/phase%3A7) labels. Each phase groups related work so contributors can pick tasks that match their skills and the current milestone.
+
+- **Phase 0 — Test Foundation:** Restore and stabilize the Vitest browser-mode test harness.
+- **Phase 1 — Explorer Scaffolding:** Scaffold the contract explorer route, validate inputs, and persist user preferences and watchlists.
+- **Phase 2 — Decoding Utilities:** Build formatting helpers and worker-driven ScVal decoding for maps, vectors, and primitive types.
+- **Phase 3 — Explorer Interaction:** Add tree controls, row previews, and navigation between explorer and inspect views.
+- **Phase 4 — Spec & Labeling:** Parse contract specs from WASM, resolve struct/enum labels, and surface schema-mismatch warnings.
+- **Phase 5 — Discovery & Simulation:** Simulate transactions, extract footprints, and provide a discovery UI for callable contract functions.
+- **Phase 6 — History & Diff:** Capture snapshots, compute semantic diffs, and present history empty states and summary cards.
+- **Phase 7 — Polish & Tests:** Add component-level tests, pull-request templates, and other repository hygiene.
 
 ## **🤝 Contributing**
+
+The catalog and publishing checks are documented in the
+[contributor issue-wave workflow](docs/ISSUE_WAVE_WORKFLOW.md).
 
 We love contributors\! Whether you are a Rustacean who loves XDR or a Frontend dev with an eye for UX:
 

@@ -140,8 +140,39 @@ describe('startLedgerHeadPoll', () => {
       randomSpy.mockRestore()
     })
 
-    it('does not call onLedgerChange when RPC returns error', async () => {
+    it.each([
+      { sequence: 1.5, description: 'fractional' },
+      { sequence: -1, description: 'negative' },
+      { sequence: Number.NaN, description: 'NaN' },
+      { sequence: Number.POSITIVE_INFINITY, description: 'Infinity' },
+    ])(
+      'skips onLedgerChange when sequence is $description ($sequence)',
+      async ({ sequence }) => {
+        const onLedgerChange = vi.fn()
+        const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+        mockCallRpc
+          .mockResolvedValueOnce({ result: { sequence } })
+          .mockResolvedValueOnce({ result: { sequence: 100 } })
+
+        const stop = startLedgerHeadPoll({
+          rpcConfig: defaultRpcConfig,
+          intervalMs: 1000,
+          onLedgerChange,
+        })
+
+        await vi.advanceTimersByTimeAsync(0)
+        expect(onLedgerChange).not.toHaveBeenCalled()
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(onLedgerChange).toHaveBeenCalledTimes(1)
+        expect(onLedgerChange).toHaveBeenCalledWith(100)
+        stop()
+        randomSpy.mockRestore()
+      },
+    )
+
+    it('reports RPC errors without calling onLedgerChange', async () => {
       const onLedgerChange = vi.fn()
+      const onError = vi.fn()
       const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
       mockCallRpc.mockResolvedValue({
         message: 'Network error',
@@ -152,11 +183,116 @@ describe('startLedgerHeadPoll', () => {
         rpcConfig: defaultRpcConfig,
         intervalMs: 1000,
         onLedgerChange,
+        onError,
       })
 
       await vi.advanceTimersByTimeAsync(0)
       await vi.advanceTimersByTimeAsync(1000)
       expect(onLedgerChange).not.toHaveBeenCalled()
+      expect(onError).toHaveBeenCalledTimes(2)
+      stop()
+      randomSpy.mockRestore()
+    })
+
+    it('reports failure and recovery through connection status callbacks', async () => {
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+      mockCallRpc
+        .mockResolvedValueOnce({
+          message: 'Network error',
+          code: 'NETWORK_ERROR',
+        })
+        .mockResolvedValueOnce({ result: { sequence: 100 } })
+      const onError = vi.fn()
+      const onRecovery = vi.fn()
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 1000,
+        onLedgerChange: vi.fn(),
+        onError,
+        onRecovery,
+      })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onError).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(onRecovery).toHaveBeenCalledOnce()
+      stop()
+      randomSpy.mockRestore()
+    })
+
+    it('polls immediately when the document becomes visible again', async () => {
+      mockCallRpc.mockResolvedValue({ result: { sequence: 100 } })
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 10000,
+        onLedgerChange: vi.fn(),
+      })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'visible',
+      })
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockCallRpc).toHaveBeenCalledTimes(2)
+      stop()
+    })
+
+    it('reports one error per failed tick and resumes after recovery', async () => {
+      const onLedgerChange = vi.fn()
+      const onError = vi.fn()
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+      const error = { message: 'Network error', code: 'NETWORK_ERROR' }
+      mockCallRpc
+        .mockResolvedValueOnce(error)
+        .mockResolvedValueOnce({ result: { sequence: 100 } })
+
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 1000,
+        onLedgerChange,
+        onError,
+      })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onError).toHaveBeenCalledWith(error)
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(onError).toHaveBeenCalledTimes(1)
+      expect(onLedgerChange).toHaveBeenCalledWith(100)
+      stop()
+      randomSpy.mockRestore()
+    })
+
+    it('continues polling after an RPC request rejects', async () => {
+      const onLedgerChange = vi.fn()
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+      mockCallRpc
+        .mockRejectedValueOnce(new Error('RPC unavailable'))
+        .mockResolvedValueOnce({ result: { sequence: 100 } })
+
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 1000,
+        onLedgerChange,
+      })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onLedgerChange).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(onLedgerChange).toHaveBeenCalledTimes(1)
+      expect(onLedgerChange).toHaveBeenCalledWith(100)
+
       stop()
       randomSpy.mockRestore()
     })
@@ -205,6 +341,24 @@ describe('startLedgerHeadPoll', () => {
       stop()
       await vi.advanceTimersByTimeAsync(5000)
       expect(mockCallRpc).toHaveBeenCalledTimes(1)
+    })
+
+    it('aborts the active latest-ledger request when stopped', () => {
+      let requestSignal: AbortSignal | undefined
+      mockCallRpc.mockImplementation((_config, _body, signal) => {
+        requestSignal = signal
+        return new Promise(() => {})
+      })
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 1000,
+        onLedgerChange: vi.fn(),
+      })
+
+      expect(requestSignal?.aborted).toBe(false)
+      stop()
+
+      expect(requestSignal?.aborted).toBe(true)
     })
   })
 
@@ -309,8 +463,96 @@ describe('startLedgerHeadPoll', () => {
           jsonrpc: '2.0',
           method: 'getLatestLedger',
         }),
+        expect.any(AbortSignal),
       )
       stop()
+    })
+  })
+
+  describe('in-flight guard prevents overlapping polls', () => {
+    it('skips scheduled tick while a request is already in flight', async () => {
+      const onLedgerChange = vi.fn()
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+      // Hold the first response unresolved so the initial tick stays in flight.
+      let resolveFirst: (value: unknown) => void = () => {}
+      const firstResponse = new Promise((resolve) => {
+        resolveFirst = resolve
+      })
+
+      mockCallRpc
+        .mockReturnValueOnce(firstResponse)
+        .mockResolvedValueOnce({ result: { sequence: 101 } })
+
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 1000,
+        onLedgerChange,
+      })
+
+      // Initial tick starts but hasn't resolved yet.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+
+      // Advance timer past the interval — the next poll should fire but be
+      // skipped because the first request is still in flight.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+
+      // Resolve the first request and flush microtasks.
+      resolveFirst({ result: { sequence: 100 } })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onLedgerChange).toHaveBeenCalledWith(100)
+
+      // Advance past the interval again — the next poll should run normally.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mockCallRpc).toHaveBeenCalledTimes(2)
+      expect(onLedgerChange).toHaveBeenCalledWith(101)
+
+      stop()
+      randomSpy.mockRestore()
+    })
+
+    it('stop prevents a deferred tick from running after in-flight request settles', async () => {
+      const onLedgerChange = vi.fn()
+      const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+      // Hold the first response unresolved so the initial tick stays in flight.
+      let resolveFirst: (value: unknown) => void = () => {}
+      const firstResponse = new Promise((resolve) => {
+        resolveFirst = resolve
+      })
+
+      mockCallRpc
+        .mockReturnValueOnce(firstResponse)
+        .mockResolvedValue({ result: { sequence: 200 } })
+
+      const stop = startLedgerHeadPoll({
+        rpcConfig: defaultRpcConfig,
+        intervalMs: 1000,
+        onLedgerChange,
+      })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+
+      // Advance timer past interval — next tick is skipped (in-flight guard).
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+
+      // Call stop while the first request is still in flight.
+      stop()
+
+      // Resolve the first request — its result should be discarded since stopped.
+      resolveFirst({ result: { sequence: 100 } })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(onLedgerChange).not.toHaveBeenCalled()
+
+      // Advance far past any intervals — no further calls.
+      await vi.advanceTimersByTimeAsync(5000)
+      expect(mockCallRpc).toHaveBeenCalledTimes(1)
+
+      randomSpy.mockRestore()
     })
   })
 

@@ -1,4 +1,5 @@
 import type { Node } from '../../types/node'
+import type { LedgerEntry } from '../../store/types'
 
 export type FlatTreeRowKind = Node['kind']
 
@@ -11,11 +12,17 @@ export interface FlatTreeRow {
   kind: FlatTreeRowKind
   hasChildren: boolean
   childCount: number
+  canonicalKey?: string
+  durability?: LedgerEntry['durability']
   node: Node
+  expired?: boolean
 }
 
 export interface FlattenTreeRoot {
   id: string
   label: string
+  canonicalKey?: string
+  durability?: LedgerEntry['durability']
   node: Node
+  expired?: boolean
 }
