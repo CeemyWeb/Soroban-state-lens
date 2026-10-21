@@ -9,7 +9,8 @@ import {
   mergeNetworkConfig,
   sanitizeSnapshots,
 } from '../../store/persistence'
-import { DEFAULT_NETWORKS } from '../../store/types'
+import { ByteDisplayMode, DEFAULT_NETWORKS } from '../../store/types'
+import { formatScBytesByPreference } from '../../lib/format/formatScBytesByPreference'
 import type { LedgerEntry } from '../../store/types'
 
 // Simple localStorage mock
@@ -238,6 +239,51 @@ describe('LensStore Hydration', () => {
         },
       ],
     })
+  })
+
+  it('round-trips byte values including zero bytes and preserves display previews', async () => {
+    const bytes = [0, 1, 255]
+    const before = {
+      hex: formatScBytesByPreference(bytes, ByteDisplayMode.HEX),
+      base64: formatScBytesByPreference(bytes, ByteDisplayMode.BASE64),
+    }
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        bytes: {
+          key: 'bytes',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: bytes,
+          lastModifiedLedger: 9,
+        },
+      },
+      10,
+      'Byte fixture',
+    )
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+    if (savedState === null)
+      throw new Error('Byte snapshot state was not saved')
+    expect(savedState).toContain('"value":[0,1,255]')
+
+    useLensStore.setState({ snapshots: {} })
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    const restoredValue = useLensStore.getState().getSnapshots('C1')[0]
+      ?.ledgerData.bytes?.value
+    expect(Array.isArray(restoredValue)).toBe(true)
+    if (!Array.isArray(restoredValue))
+      throw new Error('Byte snapshot entry was not restored')
+    expect(formatScBytesByPreference(restoredValue, ByteDisplayMode.HEX)).toBe(
+      before.hex,
+    )
+    expect(
+      formatScBytesByPreference(restoredValue, ByteDisplayMode.BASE64),
+    ).toBe(before.base64)
+    expect(before).toEqual({ hex: '0x0001ff', base64: 'AAH/' })
   })
 
   it('hydrates with a valid preset network from storage', async () => {
