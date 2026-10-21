@@ -51,7 +51,7 @@ describe('Watchlist route', () => {
     expect(sectionNav.querySelectorAll('a')).toHaveLength(4)
     expect(
       screen.getByRole('link', { name: 'Explorer' }).getAttribute('href'),
-    ).toBe(`/contracts/${VALID_CONTRACT_ID}/explorer?keys=`)
+    ).toBe(`/contracts/${VALID_CONTRACT_ID}/explorer?keys=&mode=live`)
     expect(
       screen.getByRole('link', { name: 'Discovery' }).getAttribute('href'),
     ).toBe(`/contracts/${VALID_CONTRACT_ID}/discovery`)

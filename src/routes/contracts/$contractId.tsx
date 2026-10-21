@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Link, Outlet, createFileRoute } from '@tanstack/react-router'
+import { isSampleContractId } from '../../lib/demoContract'
 import { getStoreState } from '../../store/lensStore'
 
 export const Route = createFileRoute('/contracts/$contractId')({
@@ -30,7 +31,10 @@ export function ContractLayoutRoute() {
         <Link
           to="/contracts/$contractId/explorer"
           params={{ contractId }}
-          search={{ keys: '' }}
+          search={{
+            keys: '',
+            mode: isSampleContractId(contractId) ? 'demo' : 'live',
+          }}
           activeProps={{ 'aria-current': 'page' }}
           className="rounded px-3 py-2 text-sm text-text-muted hover:text-white"
         >
