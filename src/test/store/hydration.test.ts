@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { xdr } from '@stellar/stellar-sdk'
+import { decoderWorkerApi } from '../../workers/decoder.worker'
+import { isDecoderWorkerError } from '../../types/decoder-worker'
 import { useLensStore } from '../../store/lensStore'
 import {
   NETWORK_CONFIG_STORAGE_KEY,
@@ -41,6 +44,7 @@ describe('LensStore Hydration', () => {
       networkConfig: DEFAULT_NETWORKS.futurenet,
       ledgerData: {},
       expandedNodes: [],
+      snapshots: {},
     })
   })
 
@@ -208,5 +212,126 @@ describe('LensStore Hydration', () => {
 
     await useLensStore.persist.rehydrate()
     expect(useLensStore.getState().watchlist).toEqual({})
+  })
+
+  it('migrates version-1 scalar snapshots without changing snapshot identity', async () => {
+    const snapshot = {
+      id: 'snapshot-legacy-42',
+      contractId: 'C_LEGACY',
+      timestamp: 42,
+      ledgerData: {
+        'C_LEGACY::ContractData::counter': {
+          key: 'C_LEGACY::ContractData::counter',
+          contractId: 'C_LEGACY',
+          type: 'ContractData',
+          value: {
+            kind: 'primitive',
+            path: [],
+            scType: 'u32',
+            value: 42,
+            raw: { switch: 'ScvU32', value: 42 },
+          },
+          lastModifiedLedger: 10,
+          rawXdr: 'legacy-xdr',
+        },
+      },
+    }
+    localStorage.setItem(
+      NETWORK_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          networkConfig: { kind: 'preset', networkId: 'testnet' },
+          snapshots: { C_LEGACY: [snapshot] },
+        },
+        version: 1,
+      }),
+    )
+
+    await useLensStore.persist.rehydrate()
+
+    const migrated = useLensStore.getState().snapshots.C_LEGACY[0]
+    expect(migrated.id).toBe(snapshot.id)
+    expect(migrated.ledgerData).toEqual(snapshot.ledgerData)
+    expect(useLensStore.getState().networkConfig).toEqual(
+      DEFAULT_NETWORKS.testnet,
+    )
+  })
+
+  it('rejects snapshot data from an unrecognized future version', async () => {
+    localStorage.setItem(
+      NETWORK_CONFIG_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          networkConfig: { kind: 'preset', networkId: 'testnet' },
+          snapshots: {
+            C_FUTURE: [
+              {
+                id: 'future-snapshot',
+                contractId: 'C_FUTURE',
+                timestamp: 1,
+                entries: {},
+              },
+            ],
+          },
+        },
+        version: 999,
+      }),
+    )
+
+    await useLensStore.persist.rehydrate()
+
+    expect(useLensStore.getState().snapshots).toEqual({})
+    expect(useLensStore.getState().networkConfig).toEqual(
+      DEFAULT_NETWORKS.futurenet,
+    )
+  })
+
+  it('persists and rehydrates a decoded vector snapshot with its ordered tree', async () => {
+    const xdrValue = xdr.ScVal.scvVec([
+      xdr.ScVal.scvU32(7),
+      xdr.ScVal.scvU32(9),
+    ])
+    const value = await decoderWorkerApi.decodeScVal({
+      xdr: xdrValue.toXDR('base64'),
+    })
+    if (isDecoderWorkerError(value)) {
+      throw new Error(value.message)
+    }
+
+    useLensStore.getState().addSnapshot('C_VECTOR', {
+      vector: {
+        key: 'vector',
+        contractId: 'C_VECTOR',
+        type: 'ContractData',
+        value,
+        lastModifiedLedger: 1,
+        rawXdr: xdrValue.toXDR('base64'),
+      },
+    })
+
+    const persistedJson = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(persistedJson).not.toBeNull()
+    useLensStore.setState({ snapshots: {} })
+    if (persistedJson) {
+      localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, persistedJson)
+    }
+    await useLensStore.persist.rehydrate()
+
+    const entry =
+      useLensStore.getState().snapshots.C_VECTOR[0].ledgerData.vector
+    expect(entry.value).toMatchObject({
+      kind: 'vec',
+      items: [
+        { kind: 'primitive', scType: 'u32', value: 7 },
+        { kind: 'primitive', scType: 'u32', value: 9 },
+      ],
+    })
+    if (typeof entry.value === 'object' && entry.value !== null) {
+      const vector = entry.value as { items: Array<{ path: unknown }> }
+      expect(vector.items.map((item) => item.path)).toEqual([
+        [{ type: 'index', index: 0 }],
+        [{ type: 'index', index: 1 }],
+      ])
+    }
   })
 })

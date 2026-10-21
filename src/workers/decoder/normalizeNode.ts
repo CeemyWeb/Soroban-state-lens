@@ -73,8 +73,57 @@ function toRaw(scVal: ScVal | null | undefined): RawScVal {
     return { switch: '' }
   }
   return {
-    switch: scVal.switch,
-    value: scVal.value,
+    switch: getScValSwitch(scVal) ?? '',
+    value: toSerializableRawValue(getScValValue(scVal)),
+  }
+}
+
+function toSerializableRawValue(
+  value: unknown,
+  ancestors: WeakSet<object> = new WeakSet(),
+): unknown {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'bigint' ? value.toString() : value
+  }
+
+  if (ancestors.has(value)) {
+    return { type: 'circular' }
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return Array.from(
+      new Uint8Array(value.buffer, value.byteOffset, value.byteLength),
+    )
+  }
+
+  const xdrValue = value as { toXDR?: (format: 'base64') => string }
+  if (typeof xdrValue.toXDR === 'function') {
+    return {
+      type: 'xdr',
+      value: xdrValue.toXDR('base64'),
+    }
+  }
+
+  ancestors.add(value)
+  try {
+    if (Array.isArray(value)) {
+      return value.map((nestedValue) =>
+        toSerializableRawValue(nestedValue, ancestors),
+      )
+    }
+
+    if (Object.getPrototypeOf(value) !== Object.prototype) {
+      return String(value)
+    }
+
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        toSerializableRawValue(nestedValue, ancestors),
+      ]),
+    )
+  } finally {
+    ancestors.delete(value)
   }
 }
 
@@ -135,7 +184,10 @@ function stringLikeToString(value: unknown): string {
   if (value === null || value === undefined) {
     return ''
   }
-  if (typeof value === 'object' && typeof (value as any).toString === 'function') {
+  if (
+    typeof value === 'object' &&
+    typeof (value as any).toString === 'function'
+  ) {
     try {
       const str = (value as any).toString()
       if (typeof str === 'string') {
@@ -248,7 +300,14 @@ function parts256ToString(value: unknown, signed: boolean): string | null {
     if (hiHi < minI64 || hiHi > maxI64) {
       return null
     }
-    if (hiLo < 0n || hiLo > maxU64 || loHi < 0n || loHi > maxU64 || loLo < 0n || loLo > maxU64) {
+    if (
+      hiLo < 0n ||
+      hiLo > maxU64 ||
+      loHi < 0n ||
+      loHi > maxU64 ||
+      loLo < 0n ||
+      loLo > maxU64
+    ) {
       return null
     }
 
@@ -385,9 +444,10 @@ export function normalizeNode(
         kind: 'primitive',
         path,
         scType: 'bool',
-        value: typeof normalizedScVal.value === 'boolean'
-          ? normalizedScVal.value
-          : false,
+        value:
+          typeof normalizedScVal.value === 'boolean'
+            ? normalizedScVal.value
+            : false,
         raw: toRaw(scVal),
       } satisfies PrimitiveNode
     }
@@ -639,9 +699,7 @@ export function normalizeNode(
       const isTruncated = childCount < normalizedScVal.value.length
 
       // Pre-allocate the bounded result array.
-      const items: Array<Node> = new Array(
-        childCount + (isTruncated ? 1 : 0),
-      )
+      const items: Array<Node> = new Array(childCount + (isTruncated ? 1 : 0))
 
       // Use a bounded loop with per-item error handling.
       for (let i = 0; i < childCount; i++) {

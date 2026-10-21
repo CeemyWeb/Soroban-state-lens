@@ -1,6 +1,7 @@
 import { createJSONStorage } from 'zustand/middleware'
 import { parsePersistedNetworkConfig } from '../lib/storage/parsePersistedNetworkConfig'
 import { serializePersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
+import { hydrateSnapshots } from './snapshotPersistence'
 import {
   BigIntDisplayMode,
   ByteDisplayMode,
@@ -8,15 +9,21 @@ import {
   DEFAULT_PREFERENCES,
 } from './types'
 import { validateNetworkConfigPatch } from './validateNetworkConfigPatch'
-import type { DisplayPreferences, NetworkConfig, WatchlistItem } from './types'
+import type {
+  ContractSnapshot,
+  DisplayPreferences,
+  NetworkConfig,
+  WatchlistItem,
+} from './types'
 import type { PersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
+import type { PersistedSnapshots } from './snapshotPersistence'
 import type { PersistStorage } from 'zustand/middleware'
 
 /**
  * Storage key for network config persistence
  */
 export const NETWORK_CONFIG_STORAGE_KEY = 'ssl.network-config.v1'
-export const PERSISTED_STATE_VERSION = 1
+export const PERSISTED_STATE_VERSION = 2
 
 /**
  * Storage key for preferences persistence
@@ -35,6 +42,7 @@ export interface PersistedState {
   networkConfig: PersistedNetworkConfig
   preferences: DisplayPreferences
   watchlist?: Record<string, Array<WatchlistItem>>
+  snapshots?: PersistedSnapshots
 }
 
 /**
@@ -125,7 +133,12 @@ function unwrapPersistedState(
   const persisted = persistedState as Record<string, unknown>
   const version = getPersistedStateVersion(persistedState)
 
-  if (version !== null && version !== 0 && version !== PERSISTED_STATE_VERSION) {
+  if (
+    version !== null &&
+    version !== 0 &&
+    version !== 1 &&
+    version !== PERSISTED_STATE_VERSION
+  ) {
     return null
   }
 
@@ -321,6 +334,13 @@ export function mergePreferences(
   }
 
   return { preferences: currentState.preferences }
+}
+
+export function mergeSnapshots(
+  persistedState: unknown,
+): Record<string, Array<ContractSnapshot>> {
+  const hydratedState = unwrapPersistedState(persistedState)
+  return hydrateSnapshots(hydratedState?.snapshots)
 }
 
 /**

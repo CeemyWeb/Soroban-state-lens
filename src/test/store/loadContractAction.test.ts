@@ -17,6 +17,7 @@ const mockDecodeScVal = vi.fn()
 const mockCreateDecoderWorkerSafe = vi.fn(() =>
   Promise.resolve({
     decodeScVal: mockDecodeScVal,
+    terminate: vi.fn(),
   }),
 )
 
@@ -227,7 +228,10 @@ describe('loadContract action', () => {
     const firstDecode = new Promise<unknown>((resolve) => {
       resolveFirstDecode = resolve
     })
-    const firstWorker = { decodeScVal: vi.fn().mockReturnValue(firstDecode) }
+    const firstWorker = {
+      decodeScVal: vi.fn().mockReturnValue(firstDecode),
+      terminate: vi.fn(),
+    }
     const secondWorker = {
       decodeScVal: vi.fn().mockResolvedValue({
         kind: 'primitive',
@@ -236,6 +240,7 @@ describe('loadContract action', () => {
         value: 'new',
         raw: { switch: 'ScvString', value: 'new' },
       }),
+      terminate: vi.fn(),
     }
 
     mockCreateDecoderWorkerSafe
@@ -281,5 +286,191 @@ describe('loadContract action', () => {
       'new-xdr',
     )
     expect(state.ledgerData['C_DECODE_STALE::Other::old-key']).toBeUndefined()
+  })
+
+  it('times out a pending decode, keeps raw XDR, and completes the load', async () => {
+    const { resetStore, getStoreState, useLensStore } =
+      await import('../../store/lensStore')
+    resetStore()
+    vi.useFakeTimers()
+
+    const timedOutWorker = {
+      decodeScVal: vi.fn(() => new Promise<never>(() => {})),
+      terminate: vi.fn(),
+    }
+    const freshWorker = {
+      decodeScVal: vi.fn().mockResolvedValue({
+        kind: 'primitive',
+        path: [],
+        scType: 'u32',
+        value: 9,
+        raw: { switch: 'ScvU32', value: 9 },
+      }),
+      terminate: vi.fn(),
+    }
+
+    mockCreateDecoderWorkerSafe
+      .mockImplementationOnce(() => Promise.resolve(timedOutWorker))
+      .mockImplementationOnce(() => Promise.resolve(freshWorker))
+    mockGetLedgerEntries.mockResolvedValue({
+      entries: [
+        { key: 'stalled-key', xdr: 'stalled-xdr', lastModifiedLedgerSeq: 1 },
+        { key: 'next-key', xdr: 'next-xdr', lastModifiedLedgerSeq: 2 },
+      ],
+      latestLedger: 2,
+    })
+
+    try {
+      useLensStore.getState().setNetworkConfig({
+        networkId: 'custom',
+        networkPassphrase: 'Custom Network',
+        rpcUrl: 'https://rpc.example.com',
+      })
+      useLensStore.getState().setContractSpec('OTHER', { retained: true })
+
+      const loadPromise = useLensStore
+        .getState()
+        .loadContract('C_TIMEOUT', ['stalled', 'next'])
+      for (
+        let attempt = 0;
+        attempt < 20 && !timedOutWorker.decodeScVal.mock.calls.length;
+        attempt += 1
+      ) {
+        await Promise.resolve()
+      }
+      expect(timedOutWorker.decodeScVal).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      await loadPromise
+
+      const state = getStoreState()
+      expect(state.contractLoadStatus).toBe(ContractLoadStatus.SUCCESS)
+      expect(state.ledgerData['C_TIMEOUT::Other::stalled-key'].value).toEqual({
+        kind: 'raw-xdr',
+        xdr: 'stalled-xdr',
+        reason: 'Decoder worker timed out after 10000ms',
+      })
+      expect(
+        state.ledgerData['C_TIMEOUT::Other::next-key'].value,
+      ).toMatchObject({ kind: 'primitive', scType: 'u32', value: 9 })
+      expect(timedOutWorker.terminate).toHaveBeenCalledOnce()
+      expect(freshWorker.terminate).toHaveBeenCalledOnce()
+      expect(state.networkConfig.rpcUrl).toBe('https://rpc.example.com')
+      expect(state.contractSpecs.OTHER).toEqual({ retained: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('recreates a worker after a failed reply and decodes the next entry', async () => {
+    const { resetStore, getStoreState, useLensStore } =
+      await import('../../store/lensStore')
+    resetStore()
+
+    const failedWorker = {
+      decodeScVal: vi.fn().mockRejectedValue(new Error('transport closed')),
+      terminate: vi.fn(),
+    }
+    const freshWorker = {
+      decodeScVal: vi.fn().mockResolvedValue({
+        kind: 'primitive',
+        path: [],
+        scType: 'u32',
+        value: 9,
+        raw: { switch: 'ScvU32', value: 9 },
+      }),
+      terminate: vi.fn(),
+    }
+
+    mockCreateDecoderWorkerSafe
+      .mockImplementationOnce(() => Promise.resolve(failedWorker))
+      .mockImplementationOnce(() => Promise.resolve(freshWorker))
+    mockGetLedgerEntries.mockResolvedValue({
+      entries: [
+        { key: 'failed-key', xdr: 'failed-xdr', lastModifiedLedgerSeq: 1 },
+        { key: 'next-key', xdr: 'next-xdr', lastModifiedLedgerSeq: 2 },
+      ],
+      latestLedger: 2,
+    })
+
+    await useLensStore.getState().loadContract('C_RECOVER', ['failed', 'next'])
+
+    const state = getStoreState()
+    expect(state.contractLoadStatus).toBe(ContractLoadStatus.SUCCESS)
+    expect(state.ledgerData['C_RECOVER::Other::failed-key'].value).toEqual({
+      kind: 'raw-xdr',
+      xdr: 'failed-xdr',
+      reason: 'Decoder worker communication failed: transport closed',
+    })
+    expect(state.ledgerData['C_RECOVER::Other::next-key'].value).toMatchObject({
+      kind: 'primitive',
+      scType: 'u32',
+      value: 9,
+    })
+    expect(failedWorker.terminate).toHaveBeenCalledOnce()
+    expect(freshWorker.terminate).toHaveBeenCalledOnce()
+  })
+
+  it('does not commit a timed-out decode after a newer load starts', async () => {
+    const { resetStore, getStoreState, useLensStore } =
+      await import('../../store/lensStore')
+    resetStore()
+    vi.useFakeTimers()
+
+    const pendingWorker = {
+      decodeScVal: vi.fn(() => new Promise<never>(() => {})),
+      terminate: vi.fn(),
+    }
+    const currentWorker = {
+      decodeScVal: vi.fn().mockResolvedValue({
+        kind: 'primitive',
+        path: [],
+        scType: 'u32',
+        value: 99,
+        raw: { switch: 'ScvU32', value: 99 },
+      }),
+      terminate: vi.fn(),
+    }
+    mockCreateDecoderWorkerSafe
+      .mockImplementationOnce(() => Promise.resolve(pendingWorker))
+      .mockImplementationOnce(() => Promise.resolve(currentWorker))
+    mockGetLedgerEntries
+      .mockResolvedValueOnce({
+        entries: [{ key: 'stale-key', xdr: 'stale-xdr' }],
+        latestLedger: 1,
+      })
+      .mockResolvedValueOnce({
+        entries: [{ key: 'current-key', xdr: 'current-xdr' }],
+        latestLedger: 2,
+      })
+
+    try {
+      const staleLoad = useLensStore.getState().loadContract('C_OLD', ['old'])
+      for (
+        let attempt = 0;
+        attempt < 20 && !pendingWorker.decodeScVal.mock.calls.length;
+        attempt += 1
+      ) {
+        await Promise.resolve()
+      }
+      expect(pendingWorker.decodeScVal).toHaveBeenCalledOnce()
+
+      await useLensStore.getState().loadContract('C_NEW', ['new'])
+      expect(pendingWorker.terminate).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(10_000)
+      await staleLoad
+
+      const state = getStoreState()
+      expect(state.contractLoadStatus).toBe(ContractLoadStatus.SUCCESS)
+      expect(state.activeContractId).toBe('C_NEW')
+      expect(state.ledgerData['C_NEW::Other::current-key'].value).toMatchObject(
+        { kind: 'primitive', value: 99 },
+      )
+      expect(state.ledgerData['C_OLD::Other::stale-key']).toBeUndefined()
+      expect(currentWorker.terminate).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

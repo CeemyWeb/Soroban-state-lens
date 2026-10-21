@@ -76,6 +76,8 @@ describe('decoderWorkerApi.decodeScVal', () => {
         })
       }
     }
+
+    expect(() => structuredClone(result)).not.toThrow()
   })
 
   it('should return an error for invalid XDR', async () => {

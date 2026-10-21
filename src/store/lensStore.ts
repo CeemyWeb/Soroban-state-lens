@@ -6,17 +6,26 @@ import { deepClone } from '../lib/deepClone'
 import { getLedgerEntries } from '../lib/network/getLedgerEntries'
 import { mapLedgerEntriesToStoreEntries } from '../lib/network/mapLedgerEntriesToStoreEntries'
 import { isDecoderWorkerError } from '../types/decoder-worker'
-import { createDecoderWorkerSafe } from '../workers/createDecoderWorkerSafe'
+import {
+  RecoveringDecoder,
+  toRawXdrFallback,
+} from '../workers/recoveringDecoder'
 import { createContractSlice } from './contractSlice'
 import { createContractSpecSlice } from './contractSpecSlice'
 import {
   DEFAULT_NETWORK_CONFIG,
   NETWORK_CONFIG_STORAGE_KEY,
+  PERSISTED_STATE_VERSION,
   createSafeStorage,
   mergeNetworkConfig,
   mergePreferences,
+  mergeSnapshots,
   serializeNetworkConfigForStorage,
 } from './persistence'
+import {
+  migrateLegacySnapshotEntries,
+  serializeSnapshots,
+} from './snapshotPersistence'
 import { createPreferencesSlice } from './preferencesSlice'
 import {
   ConnectionStatus,
@@ -305,6 +314,7 @@ const createContractLoadSlice = (
 ): ContractLoadSlice => {
   let requestId = 0
   let activeController: AbortController | null = null
+  let activeDecoder: RecoveringDecoder | null = null
 
   return {
     contractLoadStatus: ContractLoadStatus.IDLE,
@@ -329,9 +339,12 @@ const createContractLoadSlice = (
       if (activeController) {
         activeController.abort()
       }
+      activeDecoder?.terminate()
+      activeDecoder = null
 
       const controller = new AbortController()
       activeController = controller
+      let decoder: RecoveringDecoder | null = null
       const { signal } = controller
       const isRequestStale = () =>
         currentRequestId !== requestId || signal.aborted
@@ -355,11 +368,8 @@ const createContractLoadSlice = (
           return
         }
 
-        const worker = await createDecoderWorkerSafe()
-        if (isRequestStale()) {
-          return
-        }
-
+        decoder = new RecoveringDecoder()
+        activeDecoder = decoder
         const decodedValuesByKey: Record<string, unknown> = {}
 
         for (const entry of entries) {
@@ -367,15 +377,17 @@ const createContractLoadSlice = (
             return
           }
 
-          const result = await worker.decodeScVal({ xdr: entry.xdr })
+          const result = await decoder.decodeScVal(entry.xdr)
 
           if (isRequestStale()) {
             return
           }
 
-          decodedValuesByKey[entry.key] = isDecoderWorkerError(result)
-            ? { kind: 'raw-xdr', xdr: entry.xdr }
-            : result
+          if (isDecoderWorkerError(result)) {
+            decodedValuesByKey[entry.key] = toRawXdrFallback(entry.xdr, result)
+          } else {
+            decodedValuesByKey[entry.key] = result
+          }
         }
 
         if (isRequestStale()) {
@@ -410,6 +422,10 @@ const createContractLoadSlice = (
             error instanceof Error ? error.message : 'Failed to load contract',
         }))
       } finally {
+        decoder?.terminate()
+        if (activeDecoder === decoder) {
+          activeDecoder = null
+        }
         if (activeController === controller) {
           activeController = null
         }
@@ -542,15 +558,13 @@ export const useLensStore = create<LensStore>()(
     {
       name: NETWORK_CONFIG_STORAGE_KEY,
       storage: createSafeStorage<PersistedState>(),
-      version: 1,
+      version: PERSISTED_STATE_VERSION,
       migrate: (persistedState, version) => {
-        if (
-          typeof persistedState !== 'object' ||
-          persistedState === null ||
-          version === 0 ||
-          version === 1
-        ) {
+        if (version === 0 || version === PERSISTED_STATE_VERSION) {
           return persistedState as PersistedState
+        }
+        if (version === 1) {
+          return migrateLegacySnapshotEntries(persistedState) as PersistedState
         }
 
         return {
@@ -559,22 +573,26 @@ export const useLensStore = create<LensStore>()(
           ),
           preferences: DEFAULT_PREFERENCES,
           watchlist: {},
+          snapshots: {},
         }
       },
-      // Persist networkConfig, preferences, and the watchlist
+      // Persist network config, preferences, watchlist, and retained snapshots.
       partialize: (state): PersistedState => ({
         networkConfig: serializeNetworkConfigForStorage(state.networkConfig),
         preferences: state.preferences,
         watchlist: state.watchlist,
+        snapshots: serializeSnapshots(state.snapshots),
       }),
       // Validate and merge persisted data safely
       merge: (persistedState, currentState) => {
         const mergedNetwork = mergeNetworkConfig(persistedState, currentState)
         const mergedPreferences = mergePreferences(persistedState, currentState)
+        const snapshots = mergeSnapshots(persistedState)
         return {
           ...currentState,
           ...mergedNetwork,
           ...mergedPreferences,
+          snapshots,
         }
       },
     },
