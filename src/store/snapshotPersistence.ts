@@ -1,4 +1,8 @@
-import type { ContractSnapshot, LedgerEntry } from './types'
+import type {
+  ContractSnapshot,
+  LedgerEntry,
+  NetworkScopedContractBuckets,
+} from './types'
 
 const SNAPSHOT_VALUE_TAG = '__sslSnapshotValue'
 
@@ -6,11 +10,12 @@ interface PersistedSnapshot {
   id: string
   contractId: string
   timestamp: number
+  ledgerSequence: number
   entries: Record<string, Omit<LedgerEntry, 'value'> & { value: unknown }>
   label?: string
 }
 
-export type PersistedSnapshots = Record<string, Array<PersistedSnapshot>>
+export type PersistedSnapshots = Array<PersistedSnapshot>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -164,15 +169,20 @@ function deserializeEntry(value: unknown): LedgerEntry | null {
 }
 
 export function serializeSnapshots(
-  snapshots: Record<string, Array<ContractSnapshot>>,
-): PersistedSnapshots {
-  return Object.fromEntries(
-    Object.entries(snapshots).map(([contractId, contractSnapshots]) => [
-      contractId,
-      contractSnapshots.map((snapshot) => ({
+  snapshots: NetworkScopedContractBuckets<Array<ContractSnapshot>>,
+): NetworkScopedContractBuckets<PersistedSnapshots> {
+  const serialized: NetworkScopedContractBuckets<PersistedSnapshots> = {}
+  for (const [networkId, contracts] of Object.entries(snapshots)) {
+    const serializedContracts: Record<string, PersistedSnapshots> = {}
+    for (const [contractId, contractSnapshots] of Object.entries(
+      contracts ?? {},
+    )) {
+      if (!contractSnapshots) continue
+      serializedContracts[contractId] = contractSnapshots.map((snapshot) => ({
         id: snapshot.id,
         contractId: snapshot.contractId,
         timestamp: snapshot.timestamp,
+        ledgerSequence: snapshot.ledgerSequence,
         ...(snapshot.label === undefined ? {} : { label: snapshot.label }),
         entries: Object.fromEntries(
           Object.entries(snapshot.ledgerData).map(([key, entry]) => [
@@ -183,9 +193,11 @@ export function serializeSnapshots(
             },
           ]),
         ),
-      })),
-    ]),
-  )
+      }))
+    }
+    serialized[networkId] = serializedContracts
+  }
+  return serialized
 }
 
 export function hydrateSnapshots(
@@ -208,7 +220,11 @@ export function hydrateSnapshots(
         typeof candidate.id !== 'string' ||
         typeof candidate.contractId !== 'string' ||
         typeof candidate.timestamp !== 'number' ||
-        !Number.isFinite(candidate.timestamp)
+        !Number.isFinite(candidate.timestamp) ||
+        (candidate.ledgerSequence !== undefined &&
+          (typeof candidate.ledgerSequence !== 'number' ||
+            !Number.isSafeInteger(candidate.ledgerSequence) ||
+            candidate.ledgerSequence < 0))
       ) {
         continue
       }
@@ -230,6 +246,10 @@ export function hydrateSnapshots(
         id: candidate.id,
         contractId: candidate.contractId,
         timestamp: candidate.timestamp,
+        ledgerSequence:
+          typeof candidate.ledgerSequence === 'number'
+            ? candidate.ledgerSequence
+            : 0,
         ledgerData,
         ...(typeof candidate.label === 'string'
           ? { label: candidate.label }

@@ -346,7 +346,8 @@ describe('LensStore Hydration', () => {
 
     await useLensStore.persist.rehydrate()
 
-    const migrated = useLensStore.getState().snapshots.C_LEGACY[0]
+    const migrated = useLensStore.getState().getSnapshots('C_LEGACY')[0]
+    expect(migrated).toBeDefined()
     expect(migrated.id).toBe(snapshot.id)
     expect(migrated.ledgerData).toEqual(snapshot.ledgerData)
     expect(useLensStore.getState().networkConfig).toEqual(
@@ -395,16 +396,20 @@ describe('LensStore Hydration', () => {
       throw new Error(value.message)
     }
 
-    useLensStore.getState().addSnapshot('C_VECTOR', {
-      vector: {
-        key: 'vector',
-        contractId: 'C_VECTOR',
-        type: 'ContractData',
-        value,
-        lastModifiedLedger: 1,
-        rawXdr: xdrValue.toXDR('base64'),
+    useLensStore.getState().addSnapshot(
+      'C_VECTOR',
+      {
+        vector: {
+          key: 'vector',
+          contractId: 'C_VECTOR',
+          type: 'ContractData',
+          value,
+          lastModifiedLedger: 1,
+          rawXdr: xdrValue.toXDR('base64'),
+        },
       },
-    })
+      1,
+    )
 
     const persistedJson = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
     expect(persistedJson).not.toBeNull()
@@ -414,8 +419,11 @@ describe('LensStore Hydration', () => {
     }
     await useLensStore.persist.rehydrate()
 
-    const entry =
-      useLensStore.getState().snapshots.C_VECTOR[0].ledgerData.vector
+    const rehydratedSnapshot = useLensStore
+      .getState()
+      .getSnapshots('C_VECTOR')[0]
+    expect(rehydratedSnapshot).toBeDefined()
+    const entry = rehydratedSnapshot.ledgerData.vector
     expect(entry.value).toMatchObject({
       kind: 'vec',
       items: [

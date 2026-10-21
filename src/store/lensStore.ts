@@ -11,9 +11,9 @@ import {
   limitDecoderErrorDetail,
 } from '../types/decoder-worker'
 import {
-  createDecoderWorkerSafe,
-  terminateDecoderWorkerSafe,
-} from '../workers/createDecoderWorkerSafe'
+  RecoveringDecoder,
+  toRawXdrFallback,
+} from '../workers/recoveringDecoder'
 import { normalizeNetworkScopeId } from './networkScope'
 import { createContractSlice } from './contractSlice'
 import { createContractSpecSlice } from './contractSpecSlice'
@@ -24,6 +24,7 @@ import {
   createSafeStorage,
   mergeNetworkConfig,
   mergePreferences,
+  mergeSnapshots,
   sanitizeNetworkSnapshots,
   serializeNetworkConfigForStorage,
 } from './persistence'
@@ -40,8 +41,6 @@ import {
   DEFAULT_SNAPSHOT_RETENTION_LIMIT,
 } from './types'
 
-import type * as Comlink from 'comlink'
-import type { DecoderWorkerApi } from '../types/decoder-worker'
 import type { PersistedState } from './persistence'
 import type {
   ContractLoadSlice,
@@ -61,16 +60,6 @@ export type { LedgerEntry, LedgerKey } from './types'
 
 // Re-export for backwards compatibility
 export { DEFAULT_NETWORKS }
-
-function getDecoderFailureReason(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
-  }
-  if (typeof error === 'string' && error.trim()) {
-    return error
-  }
-  return 'Decoder worker failed'
-}
 
 /**
  * Network config slice creator
@@ -463,6 +452,7 @@ const createContractLoadSlice = (
   let requestId = 0
   let activeController: AbortController | null = null
   let activeDecodeBatch: Promise<void> | null = null
+  let activeDecoder: RecoveringDecoder | null = null
 
   const getAttemptCount = (error: unknown): number | null => {
     if (typeof error !== 'object' || error === null || !('attempts' in error)) {
@@ -546,74 +536,29 @@ const createContractLoadSlice = (
 
         const decodedValuesByKey: Record<string, unknown> = {}
         const decodeErrorReasonsByKey: Record<string, string> = {}
-        let workerUnavailableReason: string | null = null
+        const recoveringDecoder = new RecoveringDecoder()
+        decoder = recoveringDecoder
+        activeDecoder = recoveringDecoder
 
         const decodeBatch = async () => {
-          let activeDecoderWorker: Comlink.Remote<DecoderWorkerApi> | null =
-            null
-          try {
-            for (const entry of entries) {
-              if (isRequestStale()) {
-                return
-              }
-
-              if (
-                activeDecoderWorker === null &&
-                workerUnavailableReason === null
-              ) {
-                try {
-                  activeDecoderWorker = await createDecoderWorkerSafe()
-                } catch (error) {
-                  workerUnavailableReason = getDecoderFailureReason(error)
-                }
-              }
-
-              if (isRequestStale()) {
-                return
-              }
-
-              if (activeDecoderWorker === null) {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                decodeErrorReasonsByKey[entry.key] =
-                  workerUnavailableReason ?? 'Decoder worker failed'
-                continue
-              }
-
-              try {
-                const result = await activeDecoderWorker.decodeScVal({
-                  xdr: entry.xdr,
-                })
-                if (isRequestStale()) {
-                  return
-                }
-
-                if (isDecoderWorkerError(result)) {
-                  decodedValuesByKey[entry.key] = {
-                    kind: 'raw-xdr',
-                    xdr: entry.xdr,
-                  }
-                  decodeErrorReasonsByKey[entry.key] =
-                    result.message.trim() || 'Decoder worker failed'
-                } else {
-                  decodedValuesByKey[entry.key] = result
-                }
-              } catch (error) {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                decodeErrorReasonsByKey[entry.key] =
-                  getDecoderFailureReason(error)
-                terminateDecoderWorkerSafe(activeDecoderWorker)
-                activeDecoderWorker = null
-              }
+          for (const entry of entries) {
+            if (isRequestStale()) {
+              return
             }
-          } finally {
-            if (activeDecoderWorker !== null) {
-              terminateDecoderWorkerSafe(activeDecoderWorker)
+
+            const result = await recoveringDecoder.decodeScVal(entry.xdr)
+            if (isRequestStale()) {
+              return
+            }
+
+            if (isDecoderWorkerError(result)) {
+              const fallback = toRawXdrFallback(entry.xdr, result)
+              decodedValuesByKey[entry.key] = fallback
+              if (fallback.reason) {
+                decodeErrorReasonsByKey[entry.key] = fallback.reason
+              }
+            } else {
+              decodedValuesByKey[entry.key] = result
             }
           }
         }
@@ -915,16 +860,21 @@ export const useLensStore = create<LensStore>()(
         networkConfig: serializeNetworkConfigForStorage(state.networkConfig),
         preferences: state.preferences,
         watchlist: state.watchlist,
-        snapshots: sanitizeNetworkSnapshots(
-          state.snapshots,
-          state.networkConfig.networkId,
+        snapshots: serializeSnapshots(
+          sanitizeNetworkSnapshots(
+            state.snapshots,
+            state.networkConfig.networkId,
+          ),
         ),
       }),
       // Validate and merge persisted data safely
       merge: (persistedState, currentState) => {
         const mergedNetwork = mergeNetworkConfig(persistedState, currentState)
         const mergedPreferences = mergePreferences(persistedState, currentState)
-        const snapshots = mergeSnapshots(persistedState)
+        const snapshots = mergeSnapshots(
+          persistedState,
+          mergedNetwork.networkConfig.networkId,
+        )
         return {
           ...currentState,
           ...mergedNetwork,

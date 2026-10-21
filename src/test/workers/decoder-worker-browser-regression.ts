@@ -109,16 +109,20 @@ async function runRegression(): Promise<void> {
     }
 
     const store = useLensStore.getState()
-    store.addSnapshot('C_BROWSER', {
-      vector: {
-        key: 'vector',
-        contractId: 'C_BROWSER',
-        type: 'ContractData',
-        value: vectorReply,
-        lastModifiedLedger: 1,
-        rawXdr: vectorXdr,
+    store.addSnapshot(
+      'C_BROWSER',
+      {
+        vector: {
+          key: 'vector',
+          contractId: 'C_BROWSER',
+          type: 'ContractData',
+          value: vectorReply,
+          lastModifiedLedger: 1,
+          rawXdr: vectorXdr,
+        },
       },
-    })
+      1,
+    )
 
     const storedJson = localStorage.getItem('ssl.network-config.v1')
     if (!storedJson) {
@@ -126,12 +130,17 @@ async function runRegression(): Promise<void> {
     }
     const persistedVersion = JSON.parse(storedJson) as {
       state?: {
-        snapshots?: Record<string, Array<{ entries?: Record<string, unknown> }>>
+        snapshots?: Record<
+          string,
+          Record<string, Array<{ entries?: Record<string, unknown> }>>
+        >
       }
       version?: number
     }
     const persistedContractSnapshots =
-      persistedVersion.state?.snapshots?.C_BROWSER
+      persistedVersion.state?.snapshots?.[
+        useLensStore.getState().networkConfig.networkId
+      ]?.C_BROWSER
     const persistedEntries =
       persistedContractSnapshots && persistedContractSnapshots.length > 0
         ? persistedContractSnapshots[0].entries
@@ -148,13 +157,7 @@ async function runRegression(): Promise<void> {
     localStorage.setItem('ssl.network-config.v1', storedJson)
     await useLensStore.persist.rehydrate()
 
-    const snapshotsByContract = useLensStore.getState().snapshots
-    if (
-      !Object.prototype.hasOwnProperty.call(snapshotsByContract, 'C_BROWSER')
-    ) {
-      throw new Error('Reloaded snapshot was missing')
-    }
-    const reloadedSnapshots = snapshotsByContract.C_BROWSER
+    const reloadedSnapshots = useLensStore.getState().getSnapshots('C_BROWSER')
     if (reloadedSnapshots.length === 0) {
       throw new Error('Reloaded snapshot was missing')
     }

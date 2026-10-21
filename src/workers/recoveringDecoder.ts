@@ -24,15 +24,15 @@ export function toRawXdrFallback(
   return {
     kind: 'raw-xdr',
     xdr,
-    ...(error.code === 'DECODE_TIMEOUT' || error.code === 'DECODE_WORKER_FAILED'
-      ? { reason: error.message }
-      : {}),
+    reason: error.message,
   }
 }
 
 export class RecoveringDecoder {
   private worker: DecoderWorkerClient | null = null
   private readonly terminatedWorkers = new WeakSet<DecoderWorkerClient>()
+  private readonly abortController = new AbortController()
+  private terminated = false
 
   constructor(
     private readonly createWorker: () => Promise<DecoderWorkerClient> = createDecoderWorkerSafe,
@@ -40,6 +40,13 @@ export class RecoveringDecoder {
   ) {}
 
   async decodeScVal(xdr: string): Promise<DecodeScValResult> {
+    if (this.terminated) {
+      return {
+        code: 'DECODE_WORKER_FAILED',
+        message: 'Decoder has been terminated',
+      }
+    }
+
     let worker: DecoderWorkerClient | null = null
     try {
       this.worker ??= await this.createWorker()
@@ -49,6 +56,7 @@ export class RecoveringDecoder {
         activeWorker.decodeScVal({ xdr }).then((value) => value),
         () => this.dispose(activeWorker),
         this.timeoutMs,
+        this.abortController.signal,
       )
 
       if (
@@ -78,6 +86,9 @@ export class RecoveringDecoder {
   }
 
   terminate(): void {
+    if (this.terminated) return
+    this.terminated = true
+    this.abortController.abort(new Error('Decoder worker was terminated'))
     const worker = this.worker
     this.worker = null
     if (worker) {

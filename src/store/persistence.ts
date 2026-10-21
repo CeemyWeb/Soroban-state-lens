@@ -3,6 +3,7 @@ import { parsePersistedNetworkConfig } from '../lib/storage/parsePersistedNetwor
 import { serializePersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
 import { validateNetworkConfigPatch } from './validateNetworkConfigPatch'
 import { normalizeNetworkScopeId } from './networkScope'
+import { hydrateSnapshots } from './snapshotPersistence'
 import {
   BigIntDisplayMode,
   ByteDisplayMode,
@@ -45,7 +46,7 @@ export interface PersistedState {
   networkConfig: PersistedNetworkConfig
   preferences: DisplayPreferences
   watchlist?: NetworkScopedContractBuckets<Array<WatchlistItem>>
-  snapshots?: NetworkScopedContractBuckets<Array<ContractSnapshot>>
+  snapshots?: NetworkScopedContractBuckets<PersistedSnapshots>
 }
 
 /**
@@ -138,6 +139,7 @@ function unwrapPersistedState(
   if (
     version !== null &&
     version !== 0 &&
+    version !== 1 &&
     version !== PERSISTED_STATE_VERSION
   ) {
     return null
@@ -424,8 +426,10 @@ export function sanitizeNetworkSnapshots(
     return { [normalizeNetworkScopeId(legacyNetworkId)]: legacySnapshots }
   }
 
-  const networkScoped: Record<string, Record<string, Array<ContractSnapshot>>> =
-    {}
+  const networkScoped: Record<
+    string,
+    Record<string, Array<ContractSnapshot>>
+  > = {}
   for (const [networkId, snapshots] of Object.entries(value)) {
     if (!isRecord(snapshots)) continue
     const validSnapshots = sanitizeSnapshots(snapshots)
@@ -537,9 +541,28 @@ export function mergePreferences(
 
 export function mergeSnapshots(
   persistedState: unknown,
-): Record<string, Array<ContractSnapshot>> {
+  legacyNetworkId: string,
+): NetworkScopedContractBuckets<Array<ContractSnapshot>> {
   const hydratedState = unwrapPersistedState(persistedState)
-  return hydrateSnapshots(hydratedState?.snapshots)
+  const source = hydratedState?.snapshots
+  if (!isRecord(source)) return {}
+
+  if (Object.values(source).some(Array.isArray)) {
+    const legacySnapshots = hydrateSnapshots(source)
+    return Object.keys(legacySnapshots).length > 0
+      ? { [normalizeNetworkScopeId(legacyNetworkId)]: legacySnapshots }
+      : {}
+  }
+
+  const networkScoped: NetworkScopedContractBuckets<Array<ContractSnapshot>> =
+    {}
+  for (const [networkId, snapshots] of Object.entries(source)) {
+    const hydratedSnapshots = hydrateSnapshots(snapshots)
+    if (Object.keys(hydratedSnapshots).length > 0) {
+      networkScoped[normalizeNetworkScopeId(networkId)] = hydratedSnapshots
+    }
+  }
+  return networkScoped
 }
 
 /**

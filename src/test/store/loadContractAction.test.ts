@@ -17,7 +17,6 @@ function makeTemporaryLedgerKey(): string {
 
 const mockGetLedgerEntries = vi.fn()
 const mockDecodeScVal = vi.fn()
-const mockTerminateDecoderWorkerSafe = vi.fn()
 const mockCreateDecoderWorkerSafe = vi.fn(() =>
   Promise.resolve({
     decodeScVal: mockDecodeScVal,
@@ -31,7 +30,6 @@ vi.mock('../../lib/network/getLedgerEntries', () => ({
 
 vi.mock('../../workers/createDecoderWorkerSafe', () => ({
   createDecoderWorkerSafe: mockCreateDecoderWorkerSafe,
-  terminateDecoderWorkerSafe: mockTerminateDecoderWorkerSafe,
 }))
 
 describe('loadContract action', () => {
@@ -40,7 +38,6 @@ describe('loadContract action', () => {
     mockGetLedgerEntries.mockReset()
     mockDecodeScVal.mockReset()
     mockCreateDecoderWorkerSafe.mockClear()
-    mockTerminateDecoderWorkerSafe.mockReset()
   })
 
   it('loads, decodes, and stores entries on success', async () => {
@@ -237,6 +234,7 @@ describe('loadContract action', () => {
     expect(state.ledgerData['C_RAW::Other::bad-key'].value).toEqual({
       kind: 'raw-xdr',
       xdr: 'bad-xdr',
+      reason: 'Failed to decode ScVal XDR: malformed',
     })
     expect(state.ledgerData['C_RAW::Other::bad-key'].decodeErrorReason).toBe(
       'Failed to decode ScVal XDR: malformed',
@@ -312,7 +310,10 @@ describe('loadContract action', () => {
     const firstDecode = new Promise<unknown>((resolve) => {
       resolveFirstDecode = resolve
     })
-    const firstWorker = { decodeScVal: vi.fn().mockReturnValue(firstDecode) }
+    const firstWorker = {
+      decodeScVal: vi.fn().mockReturnValue(firstDecode),
+      terminate: vi.fn(),
+    }
     const latestWorker = {
       decodeScVal: vi.fn().mockResolvedValue({
         kind: 'primitive',
@@ -439,7 +440,9 @@ describe('loadContract action', () => {
         }),
       )
 
-      const loadPromise = useLensStore.getState().loadContract('C1', ['rpc-key-1'])
+      const loadPromise = useLensStore
+        .getState()
+        .loadContract('C1', ['rpc-key-1'])
       await useLensStore.getState().refreshActiveKeys()
 
       expect(mockGetLedgerEntries).toHaveBeenCalledTimes(1)
@@ -451,9 +454,8 @@ describe('loadContract action', () => {
     })
 
     it('emits sequence changes and counts fetches correctly on refresh', async () => {
-      const { resetStore, getStoreState, useLensStore } = await import(
-        '../../store/lensStore'
-      )
+      const { resetStore, getStoreState, useLensStore } =
+        await import('../../store/lensStore')
       resetStore()
 
       useLensStore.setState({
@@ -522,6 +524,7 @@ describe('loadContract action', () => {
       decodeScVal: vi
         .fn()
         .mockRejectedValue(new Error('Decoder worker stopped')),
+      terminate: vi.fn(),
     }
     const recoveredWorker = {
       decodeScVal: vi.fn().mockResolvedValue({
@@ -531,6 +534,7 @@ describe('loadContract action', () => {
         value: 'recovered',
         raw: { switch: 'ScvString', value: 'recovered' },
       }),
+      terminate: vi.fn(),
     }
     mockCreateDecoderWorkerSafe
       .mockImplementationOnce(() => Promise.resolve(failedWorker))
@@ -551,14 +555,15 @@ describe('loadContract action', () => {
     expect(contractLoadStatus).toBe(ContractLoadStatus.SUCCESS)
     expect(ledgerData['C_RECOVER::Other::first-key']).toMatchObject({
       value: { kind: 'raw-xdr', xdr: 'first-xdr' },
-      decodeErrorReason: 'Decoder worker stopped',
+      decodeErrorReason:
+        'Decoder worker communication failed: Decoder worker stopped',
     })
     expect(ledgerData['C_RECOVER::Other::second-key'].value).toMatchObject({
       value: 'recovered',
     })
     expect(mockCreateDecoderWorkerSafe).toHaveBeenCalledTimes(2)
-    expect(mockTerminateDecoderWorkerSafe).toHaveBeenCalledWith(failedWorker)
-    expect(mockTerminateDecoderWorkerSafe).toHaveBeenCalledWith(recoveredWorker)
+    expect(failedWorker.terminate).toHaveBeenCalledOnce()
+    expect(recoveredWorker.terminate).toHaveBeenCalledOnce()
   })
 
   it('times out a pending decode, keeps raw XDR, and completes the load', async () => {

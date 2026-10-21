@@ -2,7 +2,11 @@ import * as Comlink from 'comlink'
 
 import type { DecoderWorkerApi } from '../types/decoder-worker'
 
-const workersByProxy = new WeakMap<object, Worker>()
+export type DecoderWorkerClient = DecoderWorkerApi & {
+  terminate: () => void
+}
+
+const workersByClient = new WeakMap<object, Worker>()
 
 /**
  * Creates and returns a typed remote worker for decoder operations.
@@ -17,17 +21,24 @@ export function createDecoderWorker(): DecoderWorkerClient {
   const remote = Comlink.wrap<DecoderWorkerApi>(worker)
   let terminated = false
 
-  const decoder = Comlink.wrap<DecoderWorkerApi>(worker)
-  workersByProxy.set(decoder, worker)
+  const decoder: DecoderWorkerClient = {
+    ping: () => remote.ping(),
+    normalize: (request) => remote.normalize(request),
+    decodeScVal: (request) => remote.decodeScVal(request),
+    terminate: () => {
+      if (terminated) return
+      terminated = true
+      terminateDecoderWorker(decoder)
+    },
+  }
+  workersByClient.set(decoder, worker)
   return decoder
 }
 
-export function terminateDecoderWorker(
-  decoder: Comlink.Remote<DecoderWorkerApi>,
-): void {
-  const worker = workersByProxy.get(decoder)
+export function terminateDecoderWorker(decoder: DecoderWorkerClient): void {
+  const worker = workersByClient.get(decoder)
   if (worker) {
-    workersByProxy.delete(decoder)
+    workersByClient.delete(decoder)
     worker.terminate()
   }
 }
