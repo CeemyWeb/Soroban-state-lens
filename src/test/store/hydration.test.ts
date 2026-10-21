@@ -5,6 +5,7 @@ import {
   clearPersistedNetworkConfig,
 } from '../../store/persistence'
 import { DEFAULT_NETWORKS } from '../../store/types'
+import { diffSnapshotEntries } from '../../lib/diff/diffSnapshotEntries'
 
 // Simple localStorage mock
 const localStorageMock = (function () {
@@ -40,6 +41,57 @@ describe('LensStore Hydration', () => {
       networkConfig: DEFAULT_NETWORKS.futurenet,
       ledgerData: {},
       expandedNodes: [],
+    })
+  })
+
+  it('keeps one 42-to-43 modified entry after snapshot reload', async () => {
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        value: {
+          key: 'value',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: 42,
+          lastModifiedLedger: 9,
+        },
+      },
+      10,
+      'Value 42',
+    )
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        value: {
+          key: 'value',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: 43,
+          lastModifiedLedger: 10,
+        },
+      },
+      11,
+      'Value 43',
+    )
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+    if (savedState === null) throw new Error('Snapshot pair was not saved')
+    useLensStore.setState({ snapshots: {} })
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    const [previous, next] = useLensStore.getState().getSnapshots('C1')
+    expect(previous).toBeDefined()
+    expect(next).toBeDefined()
+    if (!previous || !next) throw new Error('Snapshot pair was not restored')
+    const diff = diffSnapshotEntries(previous.ledgerData, next.ledgerData)
+    expect(diff).toHaveLength(1)
+    expect(diff[0]).toMatchObject({
+      key: 'value',
+      status: 'modified',
+      prevEntry: { value: 42 },
+      nextEntry: { value: 43 },
     })
   })
 
