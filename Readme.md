@@ -20,15 +20,16 @@ Soroban stores data in the ledger as ScVal (Stellar Contract Values) within Cont
 
 - [Node.js](https://nodejs.org/) (v20+) — Use [nvm](https://github.com/nvm-sh/nvm) to manage versions
 - [Bun](https://bun.sh/) (v1.0+) — Fast all-in-one JavaScript runtime
-- [Rust](https://www.rust-lang.org/) (required for the Rust-based XDR decoder)
+
 - A running Soroban RPC node (or use the public Testnet/Mainnet endpoints)
 
 ### **Stack & Architecture**
 
 - **Styling**: [Tailwind CSS](https://tailwindcss.com/)
 - **Routing**: [TanStack Router](https://tanstack.com/router) (File-based routing in `src/routes`)
-- **Data Fetching**: [TanStack Query](https://tanstack.com/query)
-- **State Management**: [TanStack Store](https://tanstack.com/store)
+- **Soroban RPC**: Fetch-based helpers in `src/lib/network` for ledger reads, simulation, and retries
+- **State Management**: [Zustand](https://zustand.docs.pmnd.rs/) (`src/store/lensStore.ts`)
+- **Stellar UI & XDR**: [`@stellar/design-system`](https://github.com/stellar/stellar-design-system) and [`@stellar/stellar-sdk`](https://github.com/stellar/js-stellar-sdk)
 
 ### **Installation**
 
@@ -46,13 +47,24 @@ Soroban stores data in the ledger as ScVal (Stellar Contract Values) within Cont
 4. Start the development server:  
    `npm run dev` or `bun run dev`
 
+### **Read-only Ledger RPC Smoke Check**
+
+To verify a live RPC endpoint with one known-present and one known-absent base64
+LedgerKey XDR, run:
+
+```sh
+bun run smoke:ledger-read -- <rpc-url> <present-ledger-key-xdr> <absent-ledger-key-xdr>
+```
+
+This command only calls `getLedgerEntries`, verifies both key results and the
+returned latest ledger, and exits with an error for RPC failures such as
+`-32602`. It never submits transactions.
+
 ### **Browser Worker Regression**
 
-With the development server running, open
-`http://localhost:3000/src/test/browser/decoder-worker-regression.html` in a
-browser. The page exercises account and contract addresses, nested collection
-truncation, and persistence of a scalar value decoded by the real Vite worker.
-The results element reports `data-status="passed"` when all checks succeed.
+Install Chromium once with `bunx playwright install chromium`, then run
+`bun run test:browser` to exercise nested contract-data values through a real
+Comlink worker in the browser.
 
 ## **🛠 Project Architecture**
 
@@ -60,20 +72,29 @@ The project is split into three main layers:
 
 1. **The Scraper:** Periodically polls the RPC getLedgerEntries method for a specific ContractID.
 2. **The Decoder:** A Web Worker handling heavy XDR parsing and mapping raw bytes to the contract's Interface Specification (IDL).
-3. **The Visualizer:** A **React** frontend using @stellar/design-system, zustand for state, and react-window for efficiently rendering deep data structures.
+3. **The Visualizer:** A **React** frontend using @stellar/design-system, Zustand for state, and Stellar SDK helpers for rendering decoded contract data.
 
 ## **🗺 Roadmap**
 
-- \[ \] **Phase 1:** Basic ScVal to JSON decoding and tree view.
-- \[ \] **Phase 2:** Support for persistent storage types (Persistent vs. Temporary vs. Instance).
-- \[ \] **Phase 3:** Desktop Distribution — Implementing **Tauri** to provide a standalone cross-platform app.
-- \[ \] **Phase 4:** Integration with stellar-cli to launch the lens directly from a local environment.
+The backlog is organized around the [phase:0](https://github.com/Vynix-Labs/Soroban-state-lens/labels/phase%3A0) through [phase:7](https://github.com/Vynix-Labs/Soroban-state-lens/labels/phase%3A7) labels. Each phase groups related work so contributors can pick tasks that match their skills and the current milestone.
+
+- **Phase 0 — Test Foundation:** Restore and stabilize the Vitest browser-mode test harness.
+- **Phase 1 — Explorer Scaffolding:** Scaffold the contract explorer route, validate inputs, and persist user preferences and watchlists.
+- **Phase 2 — Decoding Utilities:** Build formatting helpers and worker-driven ScVal decoding for maps, vectors, and primitive types.
+- **Phase 3 — Explorer Interaction:** Add tree controls, row previews, and navigation between explorer and inspect views.
+- **Phase 4 — Spec & Labeling:** Parse contract specs from WASM, resolve struct/enum labels, and surface schema-mismatch warnings.
+- **Phase 5 — Discovery & Simulation:** Simulate transactions, extract footprints, and provide a discovery UI for callable contract functions.
+- **Phase 6 — History & Diff:** Capture snapshots, compute semantic diffs, and present history empty states and summary cards.
+- **Phase 7 — Polish & Tests:** Add component-level tests, pull-request templates, and other repository hygiene.
 
 ## **🤝 Contributing**
 
+The catalog and publishing checks are documented in the
+[contributor issue-wave workflow](docs/ISSUE_WAVE_WORKFLOW.md).
+
 We love contributors\! Whether you are a Rustacean who loves XDR or a Frontend dev with an eye for UX:
 
-1. Check the [Issues](https://www.google.com/search?q=https://github.com/Vynix-Labs/soroban-state-lens/issues) for "Good First Issue" tags.
+1. Check the [Issues](https://github.com/Vynix-Labs/Soroban-state-lens/issues) for "Good First Issue" tags.
 2. Fork the repo and create your branch.
 3. Submit a PR with a detailed description of your changes.
 

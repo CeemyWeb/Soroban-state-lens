@@ -1,6 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getStoreState, resetStore, useLensStore } from '../../store/lensStore'
+import {
+  DEFAULT_SNAPSHOT_RETENTION_LIMIT,
+  getStoreState,
+  resetStore,
+  useLensStore,
+} from '../../store/lensStore'
 
 import type { LedgerEntry } from '../../store/types'
 
@@ -31,7 +36,7 @@ describe('snapshotSlice', () => {
     const { addSnapshot, getSnapshots } = useLensStore.getState()
     const entries = { key1: makeEntry('key1', 'c1') }
 
-    addSnapshot('c1', entries, 'test label')
+    addSnapshot('c1', entries, 12345, 'test label')
 
     const snapshots = getSnapshots('c1')
     expect(snapshots).toHaveLength(1)
@@ -39,14 +44,59 @@ describe('snapshotSlice', () => {
     expect(snapshots[0].label).toBe('test label')
     expect(snapshots[0].ledgerData).toEqual(entries)
     expect(snapshots[0].timestamp).toBeTypeOf('number')
+    expect(snapshots[0].ledgerSequence).toBe(12345)
     expect(snapshots[0].id).toBeTypeOf('string')
+  })
+
+  it('addSnapshot trims whitespace-only labels and preserves meaningful text', () => {
+    const { addSnapshot, getSnapshots } = useLensStore.getState()
+
+    addSnapshot('c1', {}, 1, '   padded label   ')
+    addSnapshot('c2', {}, 2, '   \n  \t  ')
+
+    expect(getSnapshots('c1')[0].label).toBe('padded label')
+  })
+
+  it('changing contracts clears selection while retaining snapshots', () => {
+    const {
+      setActiveContractId,
+      setSelectedKeyPath,
+      addSnapshot,
+      getSnapshots,
+    } = useLensStore.getState()
+
+    setSelectedKeyPath('old.path')
+    addSnapshot('old-contract', { a: makeEntry('a', 'old-contract') }, 1)
+    setActiveContractId('new-contract')
+
+    expect(getStoreState().selectedKeyPath).toBeNull()
+    expect(getSnapshots('old-contract')).toHaveLength(1)
+    expect(getStoreState().activeContractId).toBe('new-contract')
+  })
+
+  it('keeps snapshots isolated by network for the same contract', () => {
+    const { addSnapshot, getSnapshots } = useLensStore.getState()
+
+    useLensStore.getState().setNetworkConfig({ networkId: 'futurenet' })
+    addSnapshot('c1', {}, 1, 'Futurenet snapshot')
+    useLensStore.getState().setNetworkConfig({ networkId: 'testnet' })
+    addSnapshot('c1', {}, 2, 'Testnet snapshot')
+
+    expect(getSnapshots('c1').map((snapshot) => snapshot.label)).toEqual([
+      'Testnet snapshot',
+    ])
+
+    useLensStore.getState().setNetworkConfig({ networkId: 'futurenet' })
+    expect(getSnapshots('c1').map((snapshot) => snapshot.label)).toEqual([
+      'Futurenet snapshot',
+    ])
   })
 
   it('addSnapshot stores a shallow copy of entries', () => {
     const { addSnapshot, getSnapshots } = useLensStore.getState()
     const entries = { key1: makeEntry('key1', 'c1') }
 
-    addSnapshot('c1', entries)
+    addSnapshot('c1', entries, 1)
 
     // Mutate original — snapshot should be unaffected
     entries.key1 = makeEntry('key2', 'c2')
@@ -58,9 +108,9 @@ describe('snapshotSlice', () => {
   it('addSnapshot appends multiple snapshots for same contract', () => {
     const { addSnapshot, getSnapshots } = useLensStore.getState()
 
-    addSnapshot('c1', { a: makeEntry('a', 'c1') })
-    addSnapshot('c1', { b: makeEntry('b', 'c1') })
-    addSnapshot('c1', { c: makeEntry('c', 'c1') })
+    addSnapshot('c1', { a: makeEntry('a', 'c1') }, 1)
+    addSnapshot('c1', { b: makeEntry('b', 'c1') }, 2)
+    addSnapshot('c1', { c: makeEntry('c', 'c1') }, 3)
 
     expect(getSnapshots('c1')).toHaveLength(3)
   })
@@ -68,9 +118,9 @@ describe('snapshotSlice', () => {
   it('addSnapshot isolates snapshots across contract IDs', () => {
     const { addSnapshot, getSnapshots } = useLensStore.getState()
 
-    addSnapshot('c1', { a: makeEntry('a', 'c1') })
-    addSnapshot('c2', { b: makeEntry('b', 'c2') })
-    addSnapshot('c1', { c: makeEntry('c', 'c1') })
+    addSnapshot('c1', { a: makeEntry('a', 'c1') }, 1)
+    addSnapshot('c2', { b: makeEntry('b', 'c2') }, 2)
+    addSnapshot('c1', { c: makeEntry('c', 'c1') }, 3)
 
     expect(getSnapshots('c1')).toHaveLength(2)
     expect(getSnapshots('c2')).toHaveLength(1)
@@ -79,8 +129,8 @@ describe('snapshotSlice', () => {
   it('addSnapshot generates unique IDs', () => {
     const { addSnapshot, getSnapshots } = useLensStore.getState()
 
-    addSnapshot('c1', {})
-    addSnapshot('c1', {})
+    addSnapshot('c1', {}, 1)
+    addSnapshot('c1', {}, 2)
 
     const ids = getSnapshots('c1').map((s) => s.id)
     expect(new Set(ids).size).toBe(2)
@@ -90,8 +140,8 @@ describe('snapshotSlice', () => {
     const { addSnapshot, getSnapshots, removeSnapshot } =
       useLensStore.getState()
 
-    addSnapshot('c1', { a: makeEntry('a', 'c1') })
-    addSnapshot('c1', { b: makeEntry('b', 'c1') })
+    addSnapshot('c1', { a: makeEntry('a', 'c1') }, 1)
+    addSnapshot('c1', { b: makeEntry('b', 'c1') }, 2)
 
     const targetId = getSnapshots('c1')[0].id
     removeSnapshot('c1', targetId)
@@ -104,7 +154,7 @@ describe('snapshotSlice', () => {
     const { addSnapshot, getSnapshots, removeSnapshot } =
       useLensStore.getState()
 
-    addSnapshot('c1', {})
+    addSnapshot('c1', {}, 1)
     removeSnapshot('c1', 'nonexistent-id')
 
     expect(getSnapshots('c1')).toHaveLength(1)
@@ -114,9 +164,9 @@ describe('snapshotSlice', () => {
     const { addSnapshot, getSnapshots, clearSnapshots } =
       useLensStore.getState()
 
-    addSnapshot('c1', {})
-    addSnapshot('c1', {})
-    addSnapshot('c2', {})
+    addSnapshot('c1', {}, 1)
+    addSnapshot('c1', {}, 2)
+    addSnapshot('c2', {}, 3)
 
     clearSnapshots('c1')
 
@@ -128,9 +178,54 @@ describe('snapshotSlice', () => {
     const { addSnapshot, getSnapshots, clearSnapshots } =
       useLensStore.getState()
 
-    addSnapshot('c1', {})
+    addSnapshot('c1', {}, 1)
     clearSnapshots('nonexistent')
 
     expect(getSnapshots('c1')).toHaveLength(1)
+  })
+
+  it('drops oldest snapshots first once the retention limit is exceeded', () => {
+    const { addSnapshot, getSnapshots } = useLensStore.getState()
+
+    for (let index = 1; index <= 30; index += 1) {
+      addSnapshot(
+        'c1',
+        { [`key-${index}`]: makeEntry(`key-${index}`, 'c1') },
+        index,
+        `Snapshot ${index}`,
+      )
+    }
+
+    const snapshots = getSnapshots('c1')
+    expect(snapshots).toHaveLength(25)
+    expect(snapshots[0].label).toBe('Snapshot 6')
+    expect(snapshots[snapshots.length - 1].label).toBe('Snapshot 30')
+  })
+
+  it('caps custom retention limits at the persisted snapshot bound', () => {
+    const { addSnapshot, getSnapshots } = useLensStore.getState()
+
+    for (
+      let index = 1;
+      index <= DEFAULT_SNAPSHOT_RETENTION_LIMIT + 3;
+      index += 1
+    ) {
+      addSnapshot('c1', {}, index, undefined, 100)
+    }
+
+    expect(getSnapshots('c1')).toHaveLength(DEFAULT_SNAPSHOT_RETENTION_LIMIT)
+  })
+
+  it('uses a single clock value for the snapshot timestamp and id prefix', () => {
+    const { addSnapshot, getSnapshots } = useLensStore.getState()
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(123456)
+
+    addSnapshot('c1', { key1: makeEntry('key1', 'c1') }, 123)
+
+    const snapshot = getSnapshots('c1')[0]
+    expect(snapshot.timestamp).toBe(123456)
+    expect(snapshot.id.startsWith('123456-')).toBe(true)
+
+    nowSpy.mockRestore()
   })
 })

@@ -1,0 +1,46 @@
+name: Source integrity
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-integrity:
+    name: Check source integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Execute only the base revision's checker. Never check out or run PR code.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 1
+
+      - name: Fetch PR objects without checking out source
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || exit 1
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head:refs/source-integrity/pr"
+          ACTUAL_SHA=$(git rev-parse refs/source-integrity/pr)
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+
+      - name: Test trusted checker
+        run: node --test scripts/check-source-integrity.test.mjs
+
+      - name: Inspect PR tree as data
+        if: github.event_name == 'pull_request_target'
+        run: node scripts/check-source-integrity.mjs --ref refs/source-integrity/pr
+
+      - name: Inspect main tree as data
+        if: github.event_name != 'pull_request_target'
+        run: node scripts/check-source-integrity.mjs --ref HEAD

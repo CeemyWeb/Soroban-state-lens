@@ -1,7 +1,19 @@
+export interface RpcRequestOptions {
+  timeoutMs?: number
+  signal?: AbortSignal
+}
+
 export interface RpcConfig {
   url: string
   timeout: number
   headers?: Record<string, string>
+  /** Maximum accepted successful response body size in bytes. */
+  maxResponseBytes?: number
+  /**
+   * Optional caller-provided signal. When aborted, the in-flight request is
+   * cancelled and callRpc resolves with a stable `ABORTED` error shape.
+   */
+  signal?: AbortSignal
 }
 
 export interface RpcError {

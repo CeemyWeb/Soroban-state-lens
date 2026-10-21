@@ -6,8 +6,8 @@ import {
 } from '../../lib/format/bytesToHex'
 import { VisitedTracker, createVisitedTracker } from './guards'
 import type {
-  CycleMarker,
   NormalizedAddress,
+  NormalizedCycle,
   NormalizedError,
   NormalizedMap,
   NormalizedMapEntry,
@@ -23,6 +23,7 @@ export { VisitedTracker, createVisitedTracker }
 
 // Re-export normalized types so consumers can import from a single location
 export type {
+  NormalizedCycle,
   NormalizedError,
   NormalizedMapEntry,
   NormalizedTruncated,
@@ -81,7 +82,7 @@ export type NormalizedValue =
   | number
   | string
   | null
-  | CycleMarker
+  | NormalizedCycle
   | NormalizedTruncated
   | NormalizedError
   | NormalizedUnsupported
@@ -98,10 +99,12 @@ export type NormalizedValue =
 function createUnsupportedFallback(
   variant: string,
   rawData: unknown,
+  sourceType?: string,
 ): NormalizedUnsupported {
   return {
     kind: 'unsupported',
     variant,
+    sourceType: sourceType ?? variant,
     rawData: rawData === undefined ? null : rawData,
   }
 }
@@ -157,6 +160,22 @@ function parts128ToString(value: unknown, signed: boolean): string | null {
 
   const hi = BigInt(hiStr)
   const lo = BigInt(loStr)
+  const minSigned64 = -(1n << 63n)
+  const maxSigned64 = (1n << 63n) - 1n
+  const minUnsigned64 = 0n
+  const maxUnsigned64 = (1n << 64n) - 1n
+
+  if (signed) {
+    if (hi < minSigned64 || hi > maxSigned64) {
+      return null
+    }
+  } else if (hi < minUnsigned64 || hi > maxUnsigned64) {
+    return null
+  }
+
+  if (lo < minUnsigned64 || lo > maxUnsigned64) {
+    return null
+  }
 
   // lo is always treated as unsigned 64-bit
   const uLo = lo < 0n ? lo + (1n << 64n) : lo
@@ -222,12 +241,41 @@ function parts256ToString(value: unknown, signed: boolean): string | null {
   const hiLo = BigInt(hiLoStr)
   const loHi = BigInt(loHiStr)
   const loLo = BigInt(loLoStr)
+  const minSigned64 = -(1n << 63n)
+  const maxSigned64 = (1n << 63n) - 1n
+  const minUnsigned64 = 0n
+  const maxUnsigned64 = (1n << 64n) - 1n
+
+  if (signed) {
+    if (hiHi < minSigned64 || hiHi > maxSigned64) {
+      return null
+    }
+  } else if (hiHi < minUnsigned64 || hiHi > maxUnsigned64) {
+    return null
+  }
+
+  if (hiLo < minUnsigned64 || hiLo > maxUnsigned64) {
+    return null
+  }
+  if (loHi < minUnsigned64 || loHi > maxUnsigned64) {
+    return null
+  }
+  if (loLo < minUnsigned64 || loLo > maxUnsigned64) {
+    return null
+  }
 
   if (signed) {
     if (hiHi < minI64 || hiHi > maxI64) {
       return null
     }
-    if (hiLo < 0n || hiLo > maxU64 || loHi < 0n || loHi > maxU64 || loLo < 0n || loLo > maxU64) {
+    if (
+      hiLo < 0n ||
+      hiLo > maxU64 ||
+      loHi < 0n ||
+      loHi > maxU64 ||
+      loLo < 0n ||
+      loLo > maxU64
+    ) {
       return null
     }
 
@@ -269,6 +317,20 @@ function parts256ToString(value: unknown, signed: boolean): string | null {
 export interface NormalizeScValOptions {
   /** When set, nodes at this depth or deeper are replaced with a truncated marker. */
   maxDepth?: number
+  /** When set, vec/map children beyond this count are replaced with a truncated marker. */
+  maxChildren?: number
+}
+
+function normalizeMaxChildren(value: unknown): number | undefined {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    !Number.isInteger(value) ||
+    value < 0
+  ) {
+    return undefined
+  }
+  return value
 }
 
 function createTruncatedMarker(depth: number): NormalizedTruncated {
@@ -295,7 +357,13 @@ export function normalizeScVal(
   currentDepth?: number,
 ): any {
   const depth = currentDepth ?? 0
-  const maxDepth = options?.maxDepth ?? MAX_DEPTH_DEFAULT
+  const maxDepth =
+    typeof options?.maxDepth === 'number' &&
+    Number.isFinite(options.maxDepth) &&
+    options.maxDepth >= 0 &&
+    Number.isInteger(options.maxDepth)
+      ? options.maxDepth
+      : MAX_DEPTH_DEFAULT
 
   if (depth >= maxDepth) {
     return createTruncatedMarker(depth)
@@ -411,6 +479,28 @@ export function normalizeScVal(
       return createUnsupportedFallback(ScValType.SCV_I64, scVal.value)
     }
 
+    case ScValType.SCV_TIMEPOINT: {
+      const str = bigIntLikeToString(scVal.value)
+      if (str !== null) {
+        const n = BigInt(str)
+        if (n >= 0n && n <= 0xffffffffffffffffn) {
+          return { kind: 'primitive', primitive: 'timepoint', value: str }
+        }
+      }
+      return createUnsupportedFallback(ScValType.SCV_TIMEPOINT, scVal.value)
+    }
+
+    case ScValType.SCV_DURATION: {
+      const str = bigIntLikeToString(scVal.value)
+      if (str !== null) {
+        const n = BigInt(str)
+        if (n >= 0n && n <= 0xffffffffffffffffn) {
+          return { kind: 'primitive', primitive: 'duration', value: str }
+        }
+      }
+      return createUnsupportedFallback(ScValType.SCV_DURATION, scVal.value)
+    }
+
     case ScValType.SCV_U128: {
       const str = parts128ToString(scVal.value, false)
       if (str !== null) {
@@ -494,11 +584,22 @@ export function normalizeScVal(
 
     case ScValType.SCV_VEC:
       if (Array.isArray(scVal.value)) {
+        const maxChildren = normalizeMaxChildren(options?.maxChildren)
+        const childCount =
+          maxChildren === undefined
+            ? scVal.value.length
+            : Math.min(scVal.value.length, maxChildren)
+        const items = scVal.value
+          .slice(0, childCount)
+          .map((item) => normalizeScVal(item, visited, options, depth + 1))
+
+        if (childCount < scVal.value.length) {
+          items.push(createTruncatedMarker(depth + 1))
+        }
+
         return {
           kind: 'vec',
-          items: scVal.value.map((item) =>
-            normalizeScVal(item, visited, options, depth + 1),
-          ),
+          items,
         }
       }
       return {
@@ -510,14 +611,43 @@ export function normalizeScVal(
       // Map keys in Soroban can be complex objects, so we preserve them as
       // explicit key/value pairs in a normalized map structure.
       if (Array.isArray(scVal.value)) {
+        const maxChildren = normalizeMaxChildren(options?.maxChildren)
+        const childCount =
+          maxChildren === undefined
+            ? scVal.value.length
+            : Math.min(scVal.value.length, maxChildren)
+        const entries = scVal.value
+          .slice(0, childCount)
+          .map((entry: { key: ScVal; val: ScVal } | null | undefined) => {
+            const rawKey = entry?.key
+            const rawValue = entry?.val
+
+            try {
+              return {
+                key: normalizeScVal(rawKey, visited, options, depth + 1),
+                value: normalizeScVal(rawValue, visited, options, depth + 1),
+              } satisfies NormalizedMapEntry
+            } catch {
+              return {
+                key: createUnsupportedFallback('MapEntryKeyError', rawKey),
+                value: createUnsupportedFallback(
+                  'MapEntryValueError',
+                  rawValue,
+                ),
+              } satisfies NormalizedMapEntry
+            }
+          })
+
+        if (childCount < scVal.value.length) {
+          entries.push({
+            key: createTruncatedMarker(depth + 1),
+            value: createTruncatedMarker(depth + 1),
+          })
+        }
+
         return {
           kind: 'map',
-          entries: scVal.value.map(
-            (entry: { key: ScVal; val: ScVal }): NormalizedMapEntry => ({
-              key: normalizeScVal(entry.key, visited, options, depth + 1),
-              value: normalizeScVal(entry.val, visited, options, depth + 1),
-            }),
-          ),
+          entries,
         }
       }
       // null/undefined value means an empty map

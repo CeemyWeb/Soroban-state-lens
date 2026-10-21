@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { getStoreState, resetStore, useLensStore } from '../../store/lensStore'
 import { ContractLoadStatus } from '../../store/types'
+import { MAX_DECODER_ERROR_DETAIL_LENGTH } from '../../types/decoder-worker'
 
 describe('contractLoadStatus', () => {
   beforeEach(() => {
@@ -30,8 +31,11 @@ describe('contractLoadStatus', () => {
   })
 
   it('setContractLoadError and resetContractLoadState behave correctly', () => {
-    const { setContractLoadStatus, setContractLoadError, resetContractLoadState } =
-      useLensStore.getState()
+    const {
+      setContractLoadStatus,
+      setContractLoadError,
+      resetContractLoadState,
+    } = useLensStore.getState()
 
     setContractLoadStatus(ContractLoadStatus.ERROR)
     setContractLoadError('boom')
@@ -43,6 +47,15 @@ describe('contractLoadStatus', () => {
 
     expect(getStoreState().contractLoadStatus).toBe(ContractLoadStatus.IDLE)
     expect(getStoreState().contractLoadError).toBeNull()
+  })
+
+  it('bounds oversized contract load error details before storing them', () => {
+    useLensStore.getState().setContractLoadError('x'.repeat(5000))
+
+    expect(getStoreState().contractLoadError).toHaveLength(
+      MAX_DECODER_ERROR_DETAIL_LENGTH,
+    )
+    expect(getStoreState().contractLoadError?.endsWith('...')).toBe(true)
   })
 
   it('status transitions do not mutate activeContractId or ledgerData', () => {

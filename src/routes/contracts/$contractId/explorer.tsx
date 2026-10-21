@@ -1,14 +1,66 @@
-import { useEffect, useMemo } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { useEffect, useMemo, useState } from 'react'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import { Button, Card, Heading } from '@stellar/design-system'
 import { VirtualizedTreeList } from '../../../components/explorer/VirtualizedTreeList'
-import { selectLedgerEntriesByContractId } from '../../../lib/selectors/selectLedgerEntriesByContractId'
-import { flattenTree } from '../../../lib/tree/flattenTree'
+import { LoadingSkeleton } from '../../../components/explorer/LoadingSkeleton'
+import { LocalDemoNotice } from '../../../components/explorer/LocalDemoNotice'
+import {
+  collectExpandableNodeIds,
+  flattenTree,
+} from '../../../lib/tree/flattenTree'
+import { useContractLedgerPolling } from '../../../lib/network/useContractLedgerPolling'
+import { isSampleContractId } from '../../../lib/demoContract'
 import { ContractLoadStatus } from '../../../store/types'
-import { useLensStore } from '../../../store/lensStore'
+import { useLensStore, useSnapshots } from '../../../store/lensStore'
 import { validateContractRouteParam } from './-validateContractRouteParam'
+import { validateExplorerSearch } from './-validateExplorerSearch'
+import type { LedgerEntry } from '../../../store/types'
 import type { FlattenTreeRoot } from '../../../lib/tree/flatTreeRow'
 import type { Node } from '../../../types/node'
+
+const EMPTY_EXPANDED_NODES: Array<string> = []
+
+export function ContractLoadStatusAnnouncement({
+  status,
+  error,
+  ledgerEntryCount,
+}: {
+  status: ContractLoadStatus
+  error: string | null
+  ledgerEntryCount: number
+}) {
+  const announcement =
+    status === ContractLoadStatus.LOADING
+      ? 'Loading contract data.'
+      : status === ContractLoadStatus.EMPTY
+        ? 'No contract data found.'
+        : status === ContractLoadStatus.ERROR
+          ? `Failed to load contract data. ${error || 'Unknown error.'}`
+          : status === ContractLoadStatus.SUCCESS
+            ? `Contract data loaded. ${ledgerEntryCount} ledger entr${ledgerEntryCount === 1 ? 'y' : 'ies'} found.`
+            : ''
+
+  return (
+    <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+      {announcement}
+    </p>
+  )
+}
+
+export function resolveSelectedKeyPath(
+  selectedKeyPath: string | null,
+  rows: Array<{ id?: string; keyPath?: string }>,
+): string | null {
+  if (!selectedKeyPath) {
+    return null
+  }
+
+  return rows.some(
+    (row) => row.id === selectedKeyPath || row.keyPath === selectedKeyPath,
+  )
+    ? selectedKeyPath
+    : null
+}
 
 function isNodeLike(value: unknown): value is Node {
   return (
@@ -16,6 +68,45 @@ function isNodeLike(value: unknown): value is Node {
     value !== null &&
     'kind' in value &&
     typeof (value as { kind: unknown }).kind === 'string'
+  )
+}
+
+export function DecodeFallbackList({
+  entries,
+}: {
+  entries: Array<LedgerEntry>
+}) {
+  if (entries.length === 0) {
+    return null
+  }
+
+  return (
+    <Card>
+      <section
+        aria-label="Undecoded entries"
+        className="space-y-4 border-t border-border-dark pt-4"
+      >
+        <Heading
+          size="sm"
+          as="h3"
+          className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+        >
+          Entries not decoded
+        </Heading>
+        <ul className="space-y-3">
+          {entries.map((entry) => (
+            <li key={entry.key} className="space-y-2">
+              <p className="text-sm text-text-muted break-words">
+                {entry.decodeErrorReason || 'Decoder worker failed'}
+              </p>
+              <code className="block rounded bg-surface-dark p-3 text-xs font-mono text-text-secondary break-all">
+                {entry.rawXdr || 'Raw XDR is not available for this entry.'}
+              </code>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </Card>
   )
 }
 
@@ -37,17 +128,17 @@ export function dedupeExplorerKeys(value: string): string {
 
 export const Route = createFileRoute('/contracts/$contractId/explorer')({
   component: ContractExplorer,
-  validateSearch: (search: Record<string, unknown>) => ({
-    keys:
-      typeof search.keys === 'string' ? dedupeExplorerKeys(search.keys) : '',
-  }),
+  validateSearch: (search: Record<string, unknown>) => {
+    const validated = validateExplorerSearch(search)
+    return { ...validated, keys: dedupeExplorerKeys(validated.keys) }
+  },
   beforeLoad: ({ params }) => {
     const result = validateContractRouteParam(params.contractId)
     if (!result.ok) {
-      console.error(`Invalid contract ID: ${result.reason}`)
+      throw redirect({ to: '/' })
     }
     return {
-      normalizedContractId: result.ok ? result.contractId : params.contractId,
+      normalizedContractId: result.contractId,
     }
   },
 })
@@ -66,21 +157,77 @@ function ContractExplorer() {
     (state) => state.setContractLoadError,
   )
   const loadContract = useLensStore((state) => state.loadContract)
+  const refreshActiveKeys = useLensStore((state) => state.refreshActiveKeys)
   const contractLoadStatus = useLensStore((state) => state.contractLoadStatus)
   const contractLoadError = useLensStore((state) => state.contractLoadError)
-  const expandedNodes = useLensStore((state) => state.expandedNodes)
-  const toggleExpanded = useLensStore((state) => state.toggleExpanded)
+  const contractLoadErrorCode = useLensStore(
+    (state) => state.contractLoadErrorCode,
+  )
+  const contractLoadAttemptCount = useLensStore(
+    (state) => state.contractLoadAttemptCount,
+  )
+  const rpcUrl = useLensStore((state) => state.networkConfig.rpcUrl)
+  const expandedNodes = useLensStore(
+    (state) =>
+      state.expandedNodesByContract[normalizedContractId] ??
+      EMPTY_EXPANDED_NODES,
+  )
+  const toggleExpandedForContract = useLensStore(
+    (state) => state.toggleExpandedForContract,
+  )
+  const expandAllForContract = useLensStore(
+    (state) => state.expandAllForContract,
+  )
+  const collapseAllForContract = useLensStore(
+    (state) => state.collapseAllForContract,
+  )
   const selectedKeyPath = useLensStore((state) => state.selectedKeyPath)
   const setSelectedKeyPath = useLensStore((state) => state.setSelectedKeyPath)
-
-  const ledgerEntries = useLensStore((state) =>
-    selectLedgerEntriesByContractId(state, contractId),
+  const clearSelectedKeyPath = useLensStore(
+    (state) => state.clearSelectedKeyPath,
   )
+
+  const ledgerData = useLensStore((state) => state.ledgerData)
+  const currentLedgerSequence = useLensStore(
+    (state) => state.currentLedgerSequence,
+  )
+  const ledgerEntries = useMemo(() => {
+    const entries = Object.values(ledgerData).filter(
+      (entry) => entry.contractId === contractId,
+    )
+    return entries.sort((a, b) => a.key.localeCompare(b.key))
+  }, [ledgerData, contractId])
+  const decodeFallbackEntries = useMemo(
+    () => ledgerEntries.filter((entry) => entry.decodeErrorReason),
+    [ledgerEntries],
+  )
+
+  const snapshots = useSnapshots(contractId)
+  const addSnapshot = useLensStore((state) => state.addSnapshot)
+  const [captureStatus, setCaptureStatus] = useState<string | null>(null)
+
+  const handleCaptureSnapshot = () => {
+    if (ledgerEntries.length === 0) {
+      setCaptureStatus(
+        'No snapshot captured: the current contract query returned no entries.',
+      )
+      return
+    }
+    const entriesDict: Record<string, (typeof ledgerEntries)[0]> = {}
+    ledgerEntries.forEach((entry) => {
+      entriesDict[entry.key] = entry
+    })
+    const label = `Snapshot #${snapshots.length + 1}`
+    addSnapshot(contractId, entriesDict, currentLedgerSequence, label)
+    setCaptureStatus(`Captured ${label}.`)
+  }
 
   const keys = useMemo(
     () => dedupeExplorerKeys(search.keys).split(',').filter(Boolean),
     [search.keys],
   )
+
+  useContractLedgerPolling({ contractId, keys, rpcUrl, refreshActiveKeys })
 
   const treeRoots = useMemo<Array<FlattenTreeRoot>>(
     () =>
@@ -92,8 +239,11 @@ function ContractExplorer() {
         return [
           {
             id: entry.key,
-            label: entry.key,
+            label: entry.displayKey ?? entry.displayName ?? entry.key,
+            canonicalKey: entry.canonicalKey,
+            durability: entry.durability,
             node: entry.value,
+            expired: entry.expired,
           },
         ]
       }),
@@ -104,6 +254,26 @@ function ContractExplorer() {
     () => flattenTree(treeRoots, expandedNodes),
     [expandedNodes, treeRoots],
   )
+
+  const expandableNodeIds = useMemo(
+    () => collectExpandableNodeIds(treeRoots),
+    [treeRoots],
+  )
+
+  const handleExpandAll = () => {
+    expandAllForContract(normalizedContractId, expandableNodeIds)
+  }
+
+  const handleCollapseAll = () => {
+    collapseAllForContract(normalizedContractId)
+  }
+
+  useEffect(() => {
+    const nextSelection = resolveSelectedKeyPath(selectedKeyPath, flatRows)
+    if (selectedKeyPath !== nextSelection) {
+      clearSelectedKeyPath()
+    }
+  }, [clearSelectedKeyPath, flatRows, selectedKeyPath])
 
   useEffect(() => {
     setActiveContractId(contractId)
@@ -123,6 +293,14 @@ function ContractExplorer() {
     setContractLoadError,
     setContractLoadStatus,
   ])
+
+  const errorRetryButtonId = 'contract-explorer-retry'
+
+  useEffect(() => {
+    if (contractLoadStatus === ContractLoadStatus.ERROR) {
+      document.getElementById(errorRetryButtonId)?.focus()
+    }
+  }, [contractLoadStatus, errorRetryButtonId])
 
   const handleRetry = () => {
     if (keys.length === 0) {
@@ -144,6 +322,11 @@ function ContractExplorer() {
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-10 max-w-6xl mx-auto w-full">
+      <ContractLoadStatusAnnouncement
+        status={contractLoadStatus}
+        error={contractLoadError}
+        ledgerEntryCount={ledgerEntries.length}
+      />
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-border-dark pb-6">
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
@@ -157,33 +340,31 @@ function ContractExplorer() {
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
+          {contractLoadStatus === ContractLoadStatus.SUCCESS && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleCaptureSnapshot}
+              disabled={ledgerEntries.length === 0}
+            >
+              Capture Snapshot
+            </Button>
+          )}
           <Button variant="secondary" size="sm" onClick={handleRetry}>
             Retry Load
           </Button>
         </div>
       </header>
 
-      {contractLoadStatus === ContractLoadStatus.LOADING && (
-        <Card>
-          <div className="p-6 space-y-4">
-            <Heading
-              size="sm"
-              as="h3"
-              className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
-            >
-              Loading State
-            </Heading>
-            <div className="space-y-3">
-              {Array.from({ length: 6 }).map((_, idx) => (
-                <div
-                  key={idx}
-                  className="h-10 rounded bg-white/5 border border-border-dark animate-pulse"
-                />
-              ))}
-            </div>
-          </div>
-        </Card>
+      {captureStatus && (
+        <p role="status" aria-live="polite" className="text-text-muted text-sm">
+          {captureStatus}
+        </p>
       )}
+
+      {isSampleContractId(contractId) && <LocalDemoNotice />}
+
+      {contractLoadStatus === ContractLoadStatus.LOADING && <LoadingSkeleton />}
 
       {contractLoadStatus === ContractLoadStatus.EMPTY && (
         <Card>
@@ -215,8 +396,23 @@ function ContractExplorer() {
             <p className="text-text-muted text-sm">
               {contractLoadError || 'An unknown error occurred while loading.'}
             </p>
+            {contractLoadErrorCode !== null && (
+              <p className="text-text-muted text-xs">
+                RPC error code: {contractLoadErrorCode}
+              </p>
+            )}
+            {contractLoadAttemptCount !== null && (
+              <p className="text-text-muted text-xs">
+                Request attempts: {contractLoadAttemptCount}
+              </p>
+            )}
             <div>
-              <Button variant="secondary" size="sm" onClick={handleRetry}>
+              <Button
+                id={errorRetryButtonId}
+                variant="secondary"
+                size="sm"
+                onClick={handleRetry}
+              >
                 Retry
               </Button>
             </div>
@@ -227,13 +423,34 @@ function ContractExplorer() {
       {contractLoadStatus === ContractLoadStatus.SUCCESS && (
         <Card>
           <div className="p-6 space-y-4">
-            <Heading
-              size="sm"
-              as="h3"
-              className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
-            >
-              Explorer Rows ({flatRows.length})
-            </Heading>
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <Heading
+                size="sm"
+                as="h3"
+                className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+              >
+                Explorer Rows ({flatRows.length})
+              </Heading>
+
+              {expandableNodeIds.length > 0 ? (
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleExpandAll}
+                  >
+                    Expand all
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleCollapseAll}
+                  >
+                    Collapse all
+                  </Button>
+                </div>
+              ) : null}
+            </div>
 
             {flatRows.length === 0 ? (
               <p className="text-text-muted text-sm">
@@ -243,11 +460,15 @@ function ContractExplorer() {
               <VirtualizedTreeList
                 rows={flatRows}
                 expandedNodeIds={expandedNodes}
-                onToggleExpand={toggleExpanded}
+                onToggleExpand={(nodeId) =>
+                  toggleExpandedForContract(normalizedContractId, nodeId)
+                }
                 selectedRowId={selectedKeyPath}
                 onActivateRow={(row) => handleActivateRow(row.keyPath)}
               />
             )}
+
+            <DecodeFallbackList entries={decodeFallbackEntries} />
           </div>
         </Card>
       )}

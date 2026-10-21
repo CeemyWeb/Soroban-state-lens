@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect, useBlocker } from '@tanstack/react-router'
 import { Button, Card, Heading, IconButton } from '@stellar/design-system'
-import { discoverContractKeys } from '../../../lib/network/discoverContractKeys'
-import { extractFootprintKeys } from '../../../lib/network/footprint'
+import { normalizeFootprintKeys } from '../../../lib/network/normalizeFootprintKeys'
+import { simulateTransaction } from '../../../lib/network/simulateTransaction'
+import { isFunctionName } from '../../../lib/validation/isFunctionName'
 import { useLensStore } from '../../../store/lensStore'
 import { validateContractRouteParam } from './-validateContractRouteParam'
 
@@ -18,40 +19,22 @@ export interface DiscoveryLoadState {
   keys: Array<DiscoveredKey>
   error: string | null
   requestedKeyCount: number
-  readOnlyKeys?: Array<string>
-  readWriteKeys?: Array<string>
 }
 
-export function parseDiscoveryArguments(value: string): {
-  args: Array<unknown> | null
-  error: string | null
-} {
-  try {
-    const parsed: unknown = JSON.parse(value)
-    if (!Array.isArray(parsed)) {
-      return { args: null, error: 'Arguments must be a JSON array.' }
-    }
-    return { args: parsed, error: null }
-  } catch {
-    return { args: null, error: 'Enter valid JSON arguments.' }
-  }
+export interface DiscoveryInputState {
+  transaction: string
+  arguments: string
 }
 
-export function buildDiscoveryExplorerLocation(
-  contractId: string,
-  keyPath: string,
-) {
-  return {
-    to: '/contracts/$contractId/explorer' as const,
-    params: { contractId },
-    search: { keys: keyPath },
-  }
-}
-
-export interface DiscoveryInputValues {
-  sourceAccount: string
-  functionName: string
-  args: Array<unknown>
+export function hasUnsavedDiscoveryInput(
+  inputState: DiscoveryInputState,
+  functionName: string,
+): boolean {
+  return (
+    functionName.trim() !== '' ||
+    inputState.transaction.trim() !== '' ||
+    inputState.arguments.trim() !== ''
+  )
 }
 
 export function dedupeDiscoveryKeys(
@@ -84,8 +67,6 @@ export function buildDiscoveryLoadState(
     keys,
     error: partial.error ?? null,
     requestedKeyCount,
-    readOnlyKeys: partial.readOnlyKeys ?? [],
-    readWriteKeys: partial.readWriteKeys ?? [],
   }
 }
 
@@ -93,12 +74,12 @@ export function DiscoveryStateView({
   state,
   onRetry,
   onPinKey,
-  onOpenKey,
+  emptyMessage,
 }: {
   state: DiscoveryLoadState
   onRetry?: () => void
   onPinKey?: (keyPath: string) => void
-  onOpenKey?: (keyPath: string) => void
+  emptyMessage?: string
 }) {
   const handleRetry = useCallback(() => {
     onRetry?.()
@@ -108,415 +89,316 @@ export function DiscoveryStateView({
 
   if (state.status === 'loading') {
     return (
-      <Card>
-        <div className="p-6 space-y-4">
-          <Heading
-            size="sm"
-            as="h3"
-            className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
-          >
-            Loading discovered keys…
-          </Heading>
-          <div className="space-y-3">
-            {Array.from({ length: 4 }).map((_, idx) => (
-              <div
-                key={idx}
-                className="h-10 rounded bg-white/5 border border-border-dark animate-pulse"
-              />
-            ))}
+      <>
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          Loading discovered keys.
+        </p>
+        <Card>
+          <div className="p-6 space-y-4">
+            <Heading
+              size="sm"
+              as="h3"
+              className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+            >
+              Loading discovered keys…
+            </Heading>
+            <div className="space-y-3">
+              {Array.from({ length: 4 }).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="h-10 rounded bg-white/5 border border-border-dark animate-pulse"
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      </>
     )
   }
 
   if (state.status === 'empty') {
     const requestCount = state.requestedKeyCount
     return (
-      <Card>
-        <div className="p-6 space-y-3">
-          <Heading size="sm" as="h3" className="text-white">
-            No keys discovered yet
-          </Heading>
-          <p className="text-text-muted text-sm">
-            {requestCount === 0
-              ? 'No keys were requested for discovery.'
-              : `${requestCount} requested key${requestCount === 1 ? '' : 's'} produced no discoverable results.`}
-          </p>
-        </div>
-      </Card>
+      <>
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          No keys discovered.
+        </p>
+        <Card>
+          <div className="p-6 space-y-3">
+            <Heading size="sm" as="h3" className="text-white">
+              No keys discovered yet
+            </Heading>
+            <p className="text-text-muted text-sm">
+              {emptyMessage ??
+                (requestCount === 0
+                  ? 'No keys were requested for discovery.'
+                  : `${requestCount} requested key${requestCount === 1 ? '' : 's'} produced no discoverable results.`)}
+            </p>
+          </div>
+        </Card>
+      </>
     )
   }
 
   if (state.status === 'error') {
     return (
-      <Card>
-        <div className="p-6 space-y-4 border border-red-500/20 bg-red-500/5 rounded-xl">
-          <Heading size="sm" as="h3" className="text-red-300">
-            Discovery failed
-          </Heading>
-          <p className="text-text-muted text-sm">
-            {state.error || 'An unknown error occurred while discovering keys.'}
-          </p>
-          {onRetry && (
-            <div>
-              <Button variant="secondary" size="sm" onClick={handleRetry}>
-                Retry
-              </Button>
-            </div>
-          )}
-        </div>
-      </Card>
+      <>
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          Discovery failed:{' '}
+          {state.error ?? 'An unknown error occurred while discovering keys.'}
+        </p>
+        <Card>
+          <div className="p-6 space-y-4 border border-red-500/20 bg-red-500/5 rounded-xl">
+            <Heading size="sm" as="h3" className="text-red-300">
+              Discovery failed
+            </Heading>
+            <p className="text-text-muted text-sm">
+              {state.error ??
+                'An unknown error occurred while discovering keys.'}
+            </p>
+            {onRetry && (
+              <div>
+                <Button variant="secondary" size="sm" onClick={handleRetry}>
+                  Retry
+                </Button>
+              </div>
+            )}
+          </div>
+        </Card>
+      </>
     )
   }
 
-  const { readOnly: readOnlyKeys, readWrite: readWriteKeys } =
-    extractFootprintKeys({
-      readOnly: state.readOnlyKeys,
-      readWrite: state.readWriteKeys,
-    })
-  const hasFootprintGroups = readOnlyKeys.length > 0 || readWriteKeys.length > 0
-
   return (
-    <div className="space-y-4">
-      <Heading
-        size="sm"
-        as="h2"
-        className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+    <>
+      <p
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
       >
-        Discovered Keys
-      </Heading>
-
-      {hasFootprintGroups ? (
-        <div className="space-y-5">
-          {[
-            { label: 'Read-only keys', type: 'Read-only', keys: readOnlyKeys },
-            {
-              label: 'Read-write keys',
-              type: 'Read-write',
-              keys: readWriteKeys,
-            },
-          ].map(({ label, type, keys: groupedKeys }) => (
-            <section key={label} className="space-y-3">
-              <Heading size="sm" as="h3" className="text-white">
-                {label}
-              </Heading>
-              {groupedKeys.length ? (
-                <div className="grid gap-3">
-                  {groupedKeys.map((keyPath) => (
-                    <DiscoveredKeyRow
-                      key={keyPath}
-                      item={{ keyPath, type }}
-                      onPinKey={onPinKey}
-                      onOpenKey={onOpenKey}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-text-muted">
-                  No keys in this group.
-                </p>
-              )}
-            </section>
-          ))}
-        </div>
-      ) : keys.length > 0 ? (
-        <div className="grid gap-3">
-          {keys.map((item) => (
-            <DiscoveredKeyRow
-              key={item.keyPath}
-              item={item}
-              onPinKey={onPinKey}
-              onOpenKey={onOpenKey}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="text-center py-8 text-text-muted">
-          No keys discovered yet
-        </div>
-      )}
-    </div>
-  )
-}
-
-function DiscoveredKeyRow({
-  item,
-  onPinKey,
-  onOpenKey,
-}: {
-  item: DiscoveredKey
-  onPinKey?: (keyPath: string) => void
-  onOpenKey?: (keyPath: string) => void
-}) {
-  return (
-    <Card>
-      <div className="p-4 flex items-center justify-between gap-4">
-        <button
-          type="button"
-          className="flex-1 min-w-0 text-left"
-          onClick={() => onOpenKey?.(item.keyPath)}
+        Discovery complete. {keys.length} key{keys.length === 1 ? '' : 's'}{' '}
+        found.
+      </p>
+      <div className="space-y-4">
+        <Heading
+          size="sm"
+          as="h2"
+          className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
         >
-          <div className="text-sm font-mono text-white truncate">
-            {item.keyPath}
-          </div>
-          <div className="text-xs text-text-muted mt-1">{item.type}</div>
-        </button>
-        <div className="flex items-center gap-2 shrink-0">
-          {onOpenKey && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => onOpenKey(item.keyPath)}
-            >
-              Open in Explorer
-            </Button>
+          Discovered Keys
+        </Heading>
+
+        <div className="grid gap-3">
+          {keys.length > 0 ? (
+            keys.map((item, idx) => (
+              <Card key={`${item.keyPath}-${idx}`}>
+                <div className="p-4 flex items-center justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono text-white truncate">
+                      {item.keyPath}
+                    </div>
+                    <div className="text-xs text-text-muted mt-1">
+                      {item.type}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <IconButton
+                      icon="pin"
+                      altText="Add to watchlist"
+                      onClick={() => onPinKey?.(item.keyPath)}
+                      aria-label="Add to watchlist"
+                    />
+                  </div>
+                </div>
+              </Card>
+            ))
+          ) : (
+            <div className="text-center py-8 text-text-muted">
+              No keys discovered yet
+            </div>
           )}
-          <IconButton
-            icon="pin"
-            altText="Add to watchlist"
-            onClick={() => onPinKey?.(item.keyPath)}
-            aria-label="Add to watchlist"
-          />
         </div>
       </div>
-    </Card>
-  )
-}
-
-export function DiscoveryInput({
-  isSubmitting,
-  onDiscover,
-}: {
-  isSubmitting: boolean
-  onDiscover: (input: DiscoveryInputValues) => void
-}) {
-  const [sourceAccount, setSourceAccount] = useState('')
-  const [functionName, setFunctionName] = useState('')
-  const [argumentInput, setArgumentInput] = useState('[]')
-  const parsedArguments = useMemo(
-    () => parseDiscoveryArguments(argumentInput),
-    [argumentInput],
-  )
-
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (
-      !parsedArguments.args ||
-      !sourceAccount.trim() ||
-      !functionName.trim()
-    ) {
-      return
-    }
-    onDiscover({
-      sourceAccount: sourceAccount.trim(),
-      functionName: functionName.trim(),
-      args: parsedArguments.args,
-    })
-  }
-
-  return (
-    <Card>
-      <form onSubmit={handleSubmit} className="space-y-4 p-6">
-        <Heading size="sm" as="h2" className="text-white">
-          Discover contract keys
-        </Heading>
-        <label className="block space-y-1 text-sm text-text-muted">
-          Source account
-          <input
-            value={sourceAccount}
-            onChange={(event) => setSourceAccount(event.target.value)}
-            required
-            autoComplete="off"
-            className="block w-full rounded-md border border-border-dark bg-background-dark p-2 font-mono text-white"
-            aria-label="Source account"
-          />
-        </label>
-        <label className="block space-y-1 text-sm text-text-muted">
-          Contract method
-          <input
-            value={functionName}
-            onChange={(event) => setFunctionName(event.target.value)}
-            required
-            autoComplete="off"
-            className="block w-full rounded-md border border-border-dark bg-background-dark p-2 font-mono text-white"
-            aria-label="Contract method"
-          />
-        </label>
-        <label className="block space-y-1 text-sm text-text-muted">
-          JSON arguments
-          <textarea
-            value={argumentInput}
-            onChange={(event) => setArgumentInput(event.target.value)}
-            aria-label="JSON arguments"
-            aria-invalid={parsedArguments.error !== null}
-            aria-describedby="discovery-arguments-error"
-            rows={4}
-            className="block w-full resize-y rounded-md border border-border-dark bg-background-dark p-2 font-mono text-sm text-white"
-          />
-        </label>
-        {parsedArguments.error && (
-          <p
-            id="discovery-arguments-error"
-            role="alert"
-            className="text-sm text-red-400"
-          >
-            {parsedArguments.error}
-          </p>
-        )}
-        <Button
-          type="submit"
-          variant="primary"
-          size="sm"
-          disabled={
-            isSubmitting ||
-            !sourceAccount.trim() ||
-            !functionName.trim() ||
-            parsedArguments.args === null
-          }
-        >
-          {isSubmitting ? 'Discovering…' : 'Discover keys'}
-        </Button>
-      </form>
-    </Card>
+    </>
   )
 }
 
 export const Route = createFileRoute('/contracts/$contractId/discovery')({
-  component: DiscoveryRoute,
-  beforeLoad: ({ params }) => {
+  beforeLoad({ params }) {
     const result = validateContractRouteParam(params.contractId)
     if (!result.ok) {
-      console.error(`Invalid contract ID: ${result.reason}`)
+      throw redirect({ to: '/' })
     }
+
     return {
-      normalizedContractId: result.ok ? result.contractId : params.contractId,
-      discoveryLoadState: buildDiscoveryLoadState({
-        status: 'loading',
-        keys: [],
-        error: null,
-        requestedKeyCount: 0,
-      }),
+      normalizedContractId: result.contractId,
     }
   },
+  component: DiscoveryRoute,
 })
 
-function DiscoveryRoute() {
+export function DiscoveryRoute() {
   const { contractId } = Route.useParams()
-  const { normalizedContractId, discoveryLoadState } = Route.useRouteContext()
-  const navigate = Route.useNavigate()
+  const { normalizedContractId } = Route.useRouteContext()
   const addToWatchlist = useLensStore((state) => state.addToWatchlist)
-  const networkConfig = useLensStore((state) => state.networkConfig)
-  const [state, setState] = useState<DiscoveryLoadState>(() =>
-    buildDiscoveryLoadState(discoveryLoadState),
+  const rpcUrl = useLensStore((state) => state.networkConfig.rpcUrl)
+  const [functionName, setFunctionName] = useState('')
+  const [submittedDraft, setSubmittedDraft] = useState<{
+    functionName: string
+    transaction: string
+    arguments: string
+  } | null>(null)
+  const [inputState, setInputState] = useState<DiscoveryInputState>({
+    transaction: '',
+    arguments: '',
+  })
+  const { transaction } = inputState
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false)
+  const [watchlistFeedback, setWatchlistFeedback] = useState('')
+  const [simulatedFunction, setSimulatedFunction] = useState('')
+  const activeRequest = useRef<AbortController | null>(null)
+  const [state, setState] = useState(() =>
+    buildDiscoveryLoadState({ status: 'empty', requestedKeyCount: 0 }),
   )
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const controllerRef = useRef<AbortController | null>(null)
-  const lastInputRef = useRef<DiscoveryInputValues | null>(null)
+  const isSubmitting = state.status === 'loading'
+
+  const matchesSubmittedDraft =
+    submittedDraft?.functionName === functionName &&
+    submittedDraft.transaction === inputState.transaction &&
+    submittedDraft.arguments === inputState.arguments
+  const hasUnsavedInput =
+    hasUnsavedDiscoveryInput(inputState, functionName) && !matchesSubmittedDraft
+
+  useBlocker({
+    shouldBlockFn: () =>
+      hasUnsavedInput &&
+      !window.confirm('You have unsaved discovery input. Leave this page?'),
+    enableBeforeUnload: () => hasUnsavedInput,
+  })
 
   useEffect(
     () => () => {
-      controllerRef.current?.abort()
-      controllerRef.current = null
+      activeRequest.current?.abort()
+      activeRequest.current = null
     },
     [],
   )
 
-  const handleDiscover = async (input: DiscoveryInputValues) => {
-    controllerRef.current?.abort()
-    const controller = new AbortController()
-    controllerRef.current = controller
-    lastInputRef.current = input
-    setIsSubmitting(true)
-    setState((current) =>
-      buildDiscoveryLoadState({ ...current, status: 'loading', error: null }),
+  const functionNameIsValid = isFunctionName(functionName)
+  const functionNameError =
+    !functionNameIsValid && (functionName.length > 0 || attemptedSubmit)
+      ? 'Enter a valid Soroban function name (lowercase letters, numbers, and underscores).'
+      : null
+  const transactionError =
+    attemptedSubmit && transaction.trim() === ''
+      ? 'Transaction XDR is required.'
+      : null
+
+  const handleTransactionChange = (value: string) => {
+    setInputState((previous) => ({ ...previous, transaction: value }))
+  }
+
+  const handleArgumentsChange = (value: string) => {
+    setInputState((previous) => ({ ...previous, arguments: value }))
+  }
+
+  const handlePinKey = (keyPath: string) => {
+    const added = addToWatchlist(contractId, keyPath)
+    setWatchlistFeedback(
+      added ? 'Added to watchlist.' : 'Already in watchlist.',
     )
+  }
+
+  const runSimulation = async (
+    requestedFunctionName: string,
+    requestedTransaction: string,
+  ) => {
+    activeRequest.current?.abort()
+    const controller = new AbortController()
+    activeRequest.current = controller
+    setSimulatedFunction('')
+    setState(buildDiscoveryLoadState({ status: 'loading' }))
 
     try {
-      const result = await discoverContractKeys({
-        rpcUrl: networkConfig.rpcUrl,
-        networkPassphrase: networkConfig.networkPassphrase,
-        contractId: normalizedContractId || contractId,
-        sourceAccount: input.sourceAccount,
-        functionName: input.functionName,
-        args: input.args,
+      const result = await simulateTransaction({
+        rpcUrl,
+        transaction: requestedTransaction.trim(),
         signal: controller.signal,
       })
+      if (controller.signal.aborted) return
+
       if (!result.success) {
         setState(
           buildDiscoveryLoadState({
             status: 'error',
-            error: result.error,
-            requestedKeyCount: 0,
+            error: result.error ?? 'Simulation failed.',
           }),
         )
         return
       }
 
-      const footprint = extractFootprintKeys(result.footprint)
-      const discovered = [
-        ...footprint.readOnly.map((keyPath) => ({
-          keyPath,
-          type: 'Read-only',
-        })),
-        ...footprint.readWrite.map((keyPath) => ({
-          keyPath,
-          type: 'Read-write',
-        })),
-      ]
-      setState(
-        buildDiscoveryLoadState({
-          status: discovered.length ? 'success' : 'empty',
-          keys: discovered,
-          readOnlyKeys: footprint.readOnly,
-          readWriteKeys: footprint.readWrite,
-          requestedKeyCount: discovered.length,
+      const keys = normalizeFootprintKeys(result).keys.map(
+        ({ id, access }) => ({
+          keyPath: id,
+          type: access === 'read' ? 'Read-only' : 'Read-write',
         }),
       )
-    } catch (error) {
-      if (controllerRef.current !== controller) {
-        return
-      }
+      setSimulatedFunction(requestedFunctionName.trim())
       setState(
         buildDiscoveryLoadState({
-          status: 'error',
-          error: error instanceof Error ? error.message : 'Discovery failed',
-          requestedKeyCount: 0,
+          status: keys.length > 0 ? 'success' : 'empty',
+          keys,
+          requestedKeyCount: keys.length,
         }),
       )
+      setSubmittedDraft({
+        functionName,
+        transaction: inputState.transaction,
+        arguments: inputState.arguments,
+      })
     } finally {
-      if (controllerRef.current === controller) {
-        controllerRef.current = null
-        setIsSubmitting(false)
+      if (!controller.signal.aborted) {
+        activeRequest.current = null
       }
     }
   }
 
-  const handlePinKey = (keyPath: string) => {
-    addToWatchlist(contractId, keyPath)
+  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setAttemptedSubmit(true)
+    if (!functionNameIsValid || transaction.trim() === '') return
+    void runSimulation(functionName, transaction)
   }
 
-  const handleRetry = useCallback(() => {
-    if (lastInputRef.current) {
-      void handleDiscover(lastInputRef.current)
+  const handleRetry = () => {
+    if (functionNameIsValid && transaction.trim() !== '') {
+      void runSimulation(functionName, transaction)
     }
-  }, [handleDiscover])
-
-  const discoveredKeys = useMemo(
-    () =>
-      buildDiscoveryLoadState({
-        status: state.status,
-        keys: state.keys,
-        error: state.error,
-        requestedKeyCount: state.requestedKeyCount,
-        readOnlyKeys: state.readOnlyKeys,
-        readWriteKeys: state.readWriteKeys,
-      }),
-    [state],
-  )
+  }
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-10 max-w-6xl mx-auto w-full">
+      {watchlistFeedback ? (
+        <p role="status" aria-live="polite" className="text-sm text-text-muted">
+          {watchlistFeedback}
+        </p>
+      ) : null}
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-border-dark pb-6">
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
@@ -527,17 +409,119 @@ function DiscoveryRoute() {
           <Heading size="lg" as="h1" className="font-mono break-all text-white">
             {normalizedContractId || contractId}
           </Heading>
+          <p className="text-text-secondary leading-relaxed text-sm max-w-2xl">
+            Simulate a transaction to discover the contract ledger keys it reads
+            and writes.
+          </p>
         </div>
       </header>
 
-      <DiscoveryInput isSubmitting={isSubmitting} onDiscover={handleDiscover} />
+      <form
+        className="space-y-4 border-b border-border-dark pb-6"
+        onSubmit={handleSubmit}
+      >
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="space-y-2">
+            <label
+              htmlFor="discovery-function-name"
+              className="text-sm text-white"
+            >
+              Function name
+            </label>
+            <input
+              id="discovery-function-name"
+              name="functionName"
+              value={functionName}
+              onChange={(event) => setFunctionName(event.target.value)}
+              aria-invalid={functionNameError !== null}
+              aria-describedby={
+                functionNameError ? 'function-name-error' : undefined
+              }
+              className="w-full rounded border border-border-dark bg-surface-dark px-3 py-2 text-sm text-white"
+              autoComplete="off"
+            />
+            {functionNameError && (
+              <p
+                id="function-name-error"
+                className="text-sm text-red-400"
+                role="alert"
+              >
+                {functionNameError}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <label
+              htmlFor="discovery-transaction"
+              className="text-sm text-white"
+            >
+              Transaction XDR
+            </label>
+            <textarea
+              id="discovery-transaction"
+              name="transaction"
+              value={transaction}
+              onChange={(event) => handleTransactionChange(event.target.value)}
+              aria-invalid={transactionError !== null}
+              aria-describedby={
+                transactionError ? 'transaction-error' : undefined
+              }
+              rows={3}
+              spellCheck={false}
+              className="w-full resize-y rounded border border-border-dark bg-surface-dark px-3 py-2 font-mono text-sm text-white"
+            />
+            {transactionError && (
+              <p
+                id="transaction-error"
+                className="text-sm text-red-400"
+                role="alert"
+              >
+                {transactionError}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <label htmlFor="discovery-arguments" className="text-sm text-white">
+              Arguments (JSON reference)
+            </label>
+            <textarea
+              id="discovery-arguments"
+              name="arguments"
+              value={inputState.arguments}
+              onChange={(event) => handleArgumentsChange(event.target.value)}
+              rows={3}
+              spellCheck={false}
+              aria-describedby="discovery-arguments-help"
+              className="w-full resize-y rounded border border-border-dark bg-surface-dark px-3 py-2 font-mono text-sm text-white"
+            />
+            <p
+              id="discovery-arguments-help"
+              className="text-xs text-text-muted"
+            >
+              The simulation reads arguments from the transaction XDR.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? 'Simulating…' : 'Simulate transaction'}
+          </Button>
+        </div>
+      </form>
 
       <DiscoveryStateView
-        state={discoveredKeys}
+        state={state}
         onRetry={handleRetry}
         onPinKey={handlePinKey}
-        onOpenKey={(keyPath) =>
-          void navigate(buildDiscoveryExplorerLocation(contractId, keyPath))
+        emptyMessage={
+          simulatedFunction
+            ? 'No keys found in the transaction footprint.'
+            : undefined
         }
       />
     </div>

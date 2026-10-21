@@ -1,11 +1,44 @@
 import type { Node } from '../../types/node'
 import type { FlatTreeRow, FlattenTreeRoot } from './flatTreeRow'
 
+const MAP_KEY_PREVIEW_MAX_LENGTH = 24
+
 function isExpandable(node: Node): boolean {
   return node.kind === 'vec' || node.kind === 'map'
 }
 
-function getChildren(node: Node): Array<{ idPart: string; label: string; node: Node }> {
+function getMapKeyPreview(node: Node): string | null {
+  let value: string | null = null
+
+  if (node.kind === 'primitive' && node.value !== null) {
+    value = String(node.value)
+  } else if (node.kind === 'address') {
+    value = node.value
+  } else if (node.kind === 'error') {
+    value = `${node.errorType}:${node.code}`
+  }
+
+  const normalized = value?.trim().replace(/\s+/g, ' ')
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized.length <= MAP_KEY_PREVIEW_MAX_LENGTH) {
+    return normalized
+  }
+
+  return `${normalized.slice(0, MAP_KEY_PREVIEW_MAX_LENGTH - 1)}…`
+}
+
+function getMapKeyLabel(node: Node, index: number): string {
+  const baseLabel = `entry[${index}].key`
+  const preview = getMapKeyPreview(node)
+  return preview === null ? baseLabel : `${baseLabel} (${preview})`
+}
+
+function getChildren(
+  node: Node,
+): Array<{ idPart: string; label: string; node: Node }> {
   if (node.kind === 'vec') {
     return node.items.map((child, index) => ({
       idPart: `item-${index}`,
@@ -19,7 +52,7 @@ function getChildren(node: Node): Array<{ idPart: string; label: string; node: N
       return [
         {
           idPart: `entry-${index}-key`,
-          label: `entry[${index}].key`,
+          label: getMapKeyLabel(entry.key, index),
           node: entry.key,
         },
         {
@@ -41,9 +74,23 @@ function walkNode(params: {
   parentId: string | null
   depth: number
   label: string
+  canonicalKey?: string
+  durability?: FlatTreeRow['durability']
   expandedIds: Set<string>
+  expired?: boolean
 }): void {
-  const { rows, node, id, parentId, depth, label, expandedIds } = params
+  const {
+    rows,
+    node,
+    id,
+    parentId,
+    depth,
+    label,
+    canonicalKey,
+    durability,
+    expandedIds,
+    expired,
+  } = params
   const children = getChildren(node)
 
   rows.push({
@@ -55,7 +102,10 @@ function walkNode(params: {
     kind: node.kind,
     hasChildren: children.length > 0,
     childCount: children.length,
+    ...(depth === 0 && durability !== undefined ? { durability } : {}),
+    canonicalKey,
     node,
+    ...(expired ? { expired: true } : {}),
   })
 
   if (!isExpandable(node) || !expandedIds.has(id)) {
@@ -78,7 +128,7 @@ function walkNode(params: {
 
 export function flattenTree(
   roots: Array<FlattenTreeRoot>,
-  expandedNodeIds: ReadonlySet<string> | ReadonlyArray<string>,
+  expandedNodeIds: ReadonlyArray<string> | Set<string>,
 ): Array<FlatTreeRow> {
   const rows: Array<FlatTreeRow> = []
   const expandedIds =
@@ -94,9 +144,38 @@ export function flattenTree(
       parentId: null,
       depth: 0,
       label: root.label,
+      canonicalKey: root.canonicalKey,
+      durability: root.durability,
       expandedIds,
+      expired: root.expired,
     })
   }
 
   return rows
+}
+
+/**
+ * Returns every expandable node id in the supplied roots, regardless of the
+ * current expansion state. Used to drive expand-all controls for the explorer.
+ */
+export function collectExpandableNodeIds(
+  roots: Array<FlattenTreeRoot>,
+): Array<string> {
+  const ids: Array<string> = []
+
+  const visit = (node: Node, id: string): void => {
+    const children = getChildren(node)
+    if (isExpandable(node) && children.length > 0) {
+      ids.push(id)
+      for (const child of children) {
+        visit(child.node, `${id}.${child.idPart}`)
+      }
+    }
+  }
+
+  for (const root of roots) {
+    visit(root.node, root.id)
+  }
+
+  return ids
 }

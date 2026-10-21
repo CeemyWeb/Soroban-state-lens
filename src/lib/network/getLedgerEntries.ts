@@ -1,12 +1,17 @@
 import { buildJsonRpcRequest } from '../rpc/buildJsonRpcRequest'
 import { isJsonRpcErrorResponse } from '../rpc/isJsonRpcErrorResponse'
 import { isJsonRpcSuccessResponse } from '../rpc/isJsonRpcSuccessResponse'
+import { normalizeTimeoutMs } from '../rpc/normalizeTimeoutMs'
 import { toRpcRequestId } from '../rpc/toRpcRequestId'
+import { withRpcRetries } from '../rpc/withRpcRetries'
+import { normalizeRpcUrl } from '../validation/normalizeRpcUrl'
+import { deduplicateKeys } from './deduplicateKeys'
+import type { RpcRequestOptions } from './types'
 
-export interface GetLedgerEntriesParams {
+export interface GetLedgerEntriesParams extends RpcRequestOptions {
   rpcUrl: string
   keys: Array<string>
-  signal?: AbortSignal
+  timeout?: number
 }
 
 export interface LedgerEntry {
@@ -21,6 +26,8 @@ export interface GetLedgerEntriesResult {
   latestLedger: number
 }
 
+export const MAX_LEDGER_ENTRY_KEYS = 200
+
 export class AbortError extends Error {
   constructor(message = 'Request was aborted') {
     super(message)
@@ -28,9 +35,53 @@ export class AbortError extends Error {
   }
 }
 
+export class LedgerEntriesError extends Error {
+  readonly attempts: number
+
+  constructor(message: string, code?: string | number, attempts = 0) {
+    super(message)
+    this.name = 'LedgerEntriesError'
+    this.code = code
+    this.attempts = attempts
+  }
+
+  readonly code?: string | number
+}
+
+export class GetLedgerEntriesError extends LedgerEntriesError {
+  constructor(message: string, attempts: number, code?: string | number) {
+    super(message, code, attempts)
+    this.name = 'GetLedgerEntriesError'
+  }
+}
+
+/**
+ * Normalized error shape returned by the retry-wrapped operation so
+ * {@link withRpcRetries} can classify transient failures (429, 5xx, JSON-RPC
+ * transient codes) against the shared retry policy before re-surfacing them.
+ */
+interface LedgerEntriesRpcError {
+  message: string
+  /** HTTP status for HTTP failures, or JSON-RPC error code. */
+  code?: string | number
+  /** HTTP status mirrored for the retry classifier. */
+  status?: number
+  details?: string
+}
+
+type LedgerEntriesOpResult = GetLedgerEntriesResult | LedgerEntriesRpcError
+
+function isRpcError(
+  value: LedgerEntriesOpResult,
+): value is LedgerEntriesRpcError {
+  return !('entries' in value)
+}
+
 /**
  * Fetches ledger entries for the given keys using a raw JSON-RPC request.
- * Honors the provided AbortSignal for cancellation.
+ * Honors the provided AbortSignal for cancellation and routes the network
+ * call through the shared {@link withRpcRetries} retry policy so transient
+ * 429 and 5xx failures are retried up to the configured cap.
  *
  * @param params - RPC URL, array of base64 ledger keys, and optional AbortSignal.
  * @returns Parsed ledger entries and latest ledger sequence.
@@ -40,74 +91,215 @@ export class AbortError extends Error {
 export async function getLedgerEntries(
   params: GetLedgerEntriesParams,
 ): Promise<GetLedgerEntriesResult> {
-  const { rpcUrl, keys, signal } = params
+  const { rpcUrl, keys: inputKeys, signal } = params
+  const timeoutMs = normalizeTimeoutMs(
+    params.timeoutMs ?? params.timeout,
+    10000,
+  )
+
+  // Deduplicate keys while preserving first-seen order
+  const keys = deduplicateKeys(inputKeys)
 
   if (signal?.aborted) {
     throw new AbortError()
   }
-
-  const requestId = toRpcRequestId()
-  const payload = buildJsonRpcRequest('getLedgerEntries', [keys], requestId)
-
-  try {
-    const response = await fetch(rpcUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-      signal,
-    })
-
-    if (signal?.aborted) {
-      throw new AbortError()
-    }
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
-    }
-
-    const data = (await response.json()) as unknown
-
-    if (signal?.aborted) {
-      throw new AbortError()
-    }
-
-    if (isJsonRpcErrorResponse(data)) {
-      throw new Error(`RPC Error (${data.error.code}): ${data.error.message}`)
-    }
-
-    if (!isJsonRpcSuccessResponse(data)) {
-      throw new Error('Invalid JSON-RPC response format')
-    }
-
-    const result = data.result as {
-      entries: Array<{
-        key: string
-        xdr: string
-        lastModifiedLedgerSeq?: number
-        liveUntilLedgerSeq?: number
-      }> | null
-      latestLedger: number
-    }
-
-    return {
-      entries: (result.entries || []).map((entry) => ({
-        key: entry.key,
-        xdr: entry.xdr,
-        lastModifiedLedgerSeq: entry.lastModifiedLedgerSeq,
-        liveUntilLedgerSeq: entry.liveUntilLedgerSeq,
-      })),
-      latestLedger: result.latestLedger,
-    }
-  } catch (error) {
-    if (
-      signal?.aborted ||
-      (error instanceof Error && error.name === 'AbortError') ||
-      (error instanceof DOMException && error.name === 'AbortError')
-    ) {
-      throw new AbortError()
-    }
-    throw error
+  const uniqueKeys = [...new Set(keys)]
+  if (uniqueKeys.length > MAX_LEDGER_ENTRY_KEYS) {
+    throw new Error(
+      `Too many ledger entry keys: maximum is ${MAX_LEDGER_ENTRY_KEYS}`,
+    )
   }
+
+  // Stable guard: an empty keys array never reaches the RPC endpoint and
+  // resolves to a handled empty result instead of an untyped request error.
+  if (keys.length === 0) {
+    return { entries: [], latestLedger: 0 }
+  }
+  const normalized = normalizeRpcUrl(rpcUrl)
+  if (normalized === '') {
+    throw new Error('Invalid RPC URL')
+  }
+  const requestId = toRpcRequestId()
+  let attempts = 0
+
+  let result: LedgerEntriesOpResult
+  try {
+    result = await withRpcRetries<LedgerEntriesOpResult>(
+      async () => {
+        attempts += 1
+        const payload = buildJsonRpcRequest(
+          'getLedgerEntries',
+          { keys },
+          requestId,
+        )
+        const requestController = new AbortController()
+        const onCallerAbort = () => requestController.abort()
+
+        if (signal?.aborted) {
+          throw new AbortError()
+        }
+        signal?.addEventListener('abort', onCallerAbort, { once: true })
+        const timeoutId = setTimeout(() => requestController.abort(), timeoutMs)
+
+        let response: Response
+        try {
+          response = await fetch(normalized, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+            signal: requestController.signal,
+          })
+        } catch (error) {
+          clearTimeout(timeoutId)
+          signal?.removeEventListener('abort', onCallerAbort)
+          if (signal?.aborted) {
+            throw new AbortError()
+          }
+          if (requestController.signal.aborted) {
+            return { message: 'Request timeout', code: 'TIMEOUT' }
+          }
+          if (error instanceof Error && error.name === 'AbortError') {
+            throw new AbortError()
+          }
+          // Surfaced as a retryable network error to the retry classifier.
+          return {
+            message: error instanceof Error ? error.message : 'Network error',
+            code: 'NETWORK_ERROR',
+          }
+        }
+        clearTimeout(timeoutId)
+        signal?.removeEventListener('abort', onCallerAbort)
+
+        if (signal?.aborted) {
+          throw new AbortError()
+        }
+
+        if (!response.ok) {
+          return {
+            message: `HTTP error! status: ${response.status}`,
+            code: response.status,
+            status: response.status,
+          }
+        }
+
+        const data = (await response.json()) as unknown
+
+        if (signal?.aborted) {
+          throw new AbortError()
+        }
+
+        if (isJsonRpcErrorResponse(data, requestId)) {
+          return {
+            message: `RPC Error (${data.error.code}): ${data.error.message}`,
+            code: data.error.code,
+          }
+        }
+
+        if (!isJsonRpcSuccessResponse(data, requestId)) {
+          return {
+            message: 'Invalid JSON-RPC response format',
+            code: 'INVALID',
+          }
+        }
+
+        const rawResult = data.result
+        if (typeof rawResult !== 'object' || rawResult === null) {
+          return {
+            message: 'Invalid JSON-RPC response format',
+            code: 'INVALID',
+          }
+        }
+
+        const opResult = rawResult as {
+          entries?: unknown
+          latestLedger?: unknown
+        }
+
+        if (
+          !('entries' in opResult) ||
+          !(opResult.entries === null || Array.isArray(opResult.entries)) ||
+          typeof opResult.latestLedger !== 'number' ||
+          !Number.isFinite(opResult.latestLedger) ||
+          !Number.isInteger(opResult.latestLedger) ||
+          opResult.latestLedger < 0
+        ) {
+          return {
+            message: 'Invalid JSON-RPC response format',
+            code: 'INVALID',
+          }
+        }
+
+        const filteredEntries =
+          opResult.entries === null
+            ? []
+            : opResult.entries.filter(
+                (
+                  entry,
+                ): entry is {
+                  key: string
+                  xdr: string
+                  lastModifiedLedgerSeq?: number
+                  liveUntilLedgerSeq?: number
+                } => {
+                  if (!entry || typeof entry !== 'object') {
+                    return false
+                  }
+
+                  const key = (entry as { key?: unknown }).key
+                  const xdr = (entry as { xdr?: unknown }).xdr
+
+                  return (
+                    typeof key === 'string' &&
+                    key.trim() !== '' &&
+                    typeof xdr === 'string' &&
+                    xdr.trim() !== ''
+                  )
+                },
+              )
+
+        // Deduplicate by key, keep first-seen records
+        const seen = new Set<string>()
+        const deduped = [] as Array<{
+          key: string
+          xdr: string
+          lastModifiedLedgerSeq?: number
+          liveUntilLedgerSeq?: number
+        }>
+
+        for (const entry of filteredEntries) {
+          if (!seen.has(entry.key)) {
+            seen.add(entry.key)
+            deduped.push({
+              key: entry.key,
+              xdr: entry.xdr,
+              lastModifiedLedgerSeq: entry.lastModifiedLedgerSeq,
+              liveUntilLedgerSeq: entry.liveUntilLedgerSeq,
+            })
+          }
+        }
+
+        return {
+          entries: deduped,
+          latestLedger: opResult.latestLedger,
+        }
+      },
+      { signal },
+    )
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw error
+    }
+    throw new GetLedgerEntriesError(
+      error instanceof Error ? error.message : 'Failed to load ledger entries',
+      attempts,
+    )
+  }
+
+  if (isRpcError(result)) {
+    throw new GetLedgerEntriesError(result.message, attempts, result.code)
+  }
+
+  return result
 }

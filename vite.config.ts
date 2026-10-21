@@ -1,5 +1,5 @@
 import { URL, fileURLToPath } from 'node:url'
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { devtools } from '@tanstack/devtools-vite'
 import viteReact from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -25,6 +25,7 @@ export default defineConfig({
   build: {
     // stellar-sdk and the decoder worker are inherently ~1 MB each and already
     // isolated as separately-cacheable chunks — suppress the false-positive warning.
+    // The actual budget enforcement lives in scripts/check-bundle-size.mjs.
     chunkSizeWarningLimit: 1100,
     rollupOptions: {
       output: {
@@ -57,6 +58,10 @@ export default defineConfig({
     },
   },
   test: {
+    exclude: [
+      ...configDefaults.exclude,
+      'scripts/check-source-integrity.test.mjs',
+    ],
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.test.ts'],

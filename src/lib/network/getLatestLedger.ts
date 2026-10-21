@@ -1,13 +1,19 @@
 import { buildJsonRpcRequest } from '../rpc/buildJsonRpcRequest'
 import { isJsonRpcSuccessResponse } from '../rpc/isJsonRpcSuccessResponse'
+import { normalizeTimeoutMs } from '../rpc/normalizeTimeoutMs'
 import { toRpcRequestId } from '../rpc/toRpcRequestId'
 import { callRpc } from './rpcClient'
-import type { LatestLedgerResult, RpcError } from './types'
+import type { LatestLedgerResult, RpcError, RpcRequestOptions } from './types'
 
 export interface GetLatestLedgerConnectionResult {
   success: boolean
   ledger?: LatestLedgerResult
   error?: string
+}
+
+export interface LatestLedgerConnectionCheckOptions extends RpcRequestOptions {
+  timeout?: number
+  signal?: AbortSignal
 }
 
 function isRpcError(value: unknown): value is RpcError {
@@ -25,19 +31,28 @@ function parseLatestLedgerResult(value: unknown): LatestLedgerResult | null {
   }
 
   const candidate = value as Record<string, unknown>
-  if (typeof candidate.sequence !== 'number') {
+  if (
+    typeof candidate.sequence !== 'number' ||
+    !Number.isFinite(candidate.sequence) ||
+    !Number.isInteger(candidate.sequence) ||
+    candidate.sequence < 0
+  ) {
     return null
   }
 
-  const ledger: LatestLedgerResult = {
-    sequence: candidate.sequence,
-  }
-
+  const ledger: LatestLedgerResult = { sequence: candidate.sequence }
   if (typeof candidate.id === 'string') {
     ledger.id = candidate.id
   }
 
   if (typeof candidate.protocolVersion === 'number') {
+    if (
+      !Number.isFinite(candidate.protocolVersion) ||
+      !Number.isInteger(candidate.protocolVersion) ||
+      candidate.protocolVersion < 0
+    ) {
+      return null
+    }
     ledger.protocolVersion = candidate.protocolVersion
   }
 
@@ -46,14 +61,31 @@ function parseLatestLedgerResult(value: unknown): LatestLedgerResult | null {
 
 export async function getLatestLedgerConnectionCheck(
   url: string,
+  timeoutOrOptions?: number | LatestLedgerConnectionCheckOptions,
+  callerSignal?: AbortSignal,
 ): Promise<GetLatestLedgerConnectionResult> {
+  const timeoutMs =
+    typeof timeoutOrOptions === 'number'
+      ? timeoutOrOptions
+      : timeoutOrOptions?.timeoutMs ?? timeoutOrOptions?.timeout
+  const signal =
+    typeof timeoutOrOptions === 'object'
+      ? timeoutOrOptions.signal ?? callerSignal
+      : callerSignal
+
+  if (signal?.aborted) {
+    return { success: false, error: 'Connection check aborted' }
+  }
+
   try {
+    const requestId = toRpcRequestId()
     const response = await callRpc(
       {
         url,
-        timeout: 5000,
+        timeout: normalizeTimeoutMs(timeoutMs, 5000),
+        signal,
       },
-      buildJsonRpcRequest('getLatestLedger', {}, toRpcRequestId()),
+      buildJsonRpcRequest('getLatestLedger', {}, requestId),
     )
 
     if (isRpcError(response)) {
@@ -63,7 +95,7 @@ export async function getLatestLedgerConnectionCheck(
       }
     }
 
-    if (!isJsonRpcSuccessResponse(response)) {
+    if (!isJsonRpcSuccessResponse(response, requestId)) {
       return {
         success: false,
         error: 'Invalid response from RPC server',
@@ -85,7 +117,12 @@ export async function getLatestLedgerConnectionCheck(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Connection failed',
+      error:
+        signal?.aborted
+          ? 'Connection check aborted'
+          : error instanceof Error
+            ? error.message
+            : 'Connection failed',
     }
   }
 }

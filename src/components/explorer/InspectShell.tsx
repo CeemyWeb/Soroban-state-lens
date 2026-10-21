@@ -1,41 +1,92 @@
+import { useEffect, useRef, useState } from 'react'
 import { Button, Card, Heading, IconButton } from '@stellar/design-system'
+import { Link } from '@tanstack/react-router'
+import { isSampleContractId } from '../../lib/demoContract'
 import { useLensStore } from '../../store/lensStore'
+import { buildInspectBreadcrumb } from './buildInspectBreadcrumb'
+import { LocalDemoNotice } from './LocalDemoNotice'
+import type { LedgerEntry } from '../../store/types'
 
 interface InspectShellProps {
   contractId: string
   normalizedContractId: string
   keyPath: string
-}
-
-interface KeyMetadata {
-  durability?: string
-  lastModifiedLedger: number
-  expirationLedger?: number
+  keyPathError?: string
 }
 
 export function InspectShell({
   contractId,
   normalizedContractId,
   keyPath,
+  keyPathError,
 }: InspectShellProps) {
   const addToWatchlist = useLensStore((state) => state.addToWatchlist)
+  const schemaMismatch = useLensStore((state) =>
+    (
+      state.contractSpecMismatches[normalizedContractId.toUpperCase()] ?? []
+    ).find((mismatch) => mismatch.keyPath === keyPath),
+  )
+  const entry = useLensStore((state) =>
+    Object.values(state.ledgerData).reduce<LedgerEntry | undefined>(
+      (selected, candidate) => {
+        const matchesPath =
+          keyPath === candidate.key || keyPath.startsWith(`${candidate.key}.`)
+        if (
+          candidate.contractId !== (normalizedContractId || contractId) ||
+          !matchesPath
+        ) {
+          return selected
+        }
+        return !selected || candidate.key.length > selected.key.length
+          ? candidate
+          : selected
+      },
+      undefined,
+    ),
+  )
+  const [copied, setCopied] = useState(false)
+  const [watchlistFeedback, setWatchlistFeedback] = useState('')
+  const copiedResetTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const metadata: KeyMetadata = {
-    durability: 'Persistent',
-    lastModifiedLedger: 1234567,
-    expirationLedger: 1235000,
-  }
+  useEffect(() => {
+    return () => {
+      if (copiedResetTimeout.current !== null) {
+        clearTimeout(copiedResetTimeout.current)
+      }
+    }
+  }, [])
 
   const handlePinKey = () => {
-    if (keyPath) {
-      addToWatchlist(contractId, keyPath)
+    if (entry && keyPath) {
+      const added = addToWatchlist(
+        normalizedContractId || contractId,
+        entry.key,
+      )
+      setWatchlistFeedback(
+        added ? 'Added to watchlist.' : 'Already in watchlist.',
+      )
     }
   }
 
-  const handleCopyXDR = () => {
-    const mockXDR = 'AAAAEgAAAAEAAAABAAAABQAAADEAA...'
-    navigator.clipboard.writeText(mockXDR)
+  const handleCopyXDR = async () => {
+    if (!entry?.rawXdr) {
+      return
+    }
+
+    await navigator.clipboard.writeText(entry.rawXdr)
+    setCopied(true)
+
+    if (copiedResetTimeout.current !== null) {
+      clearTimeout(copiedResetTimeout.current)
+    }
+
+    copiedResetTimeout.current = setTimeout(() => {
+      setCopied(false)
+      copiedResetTimeout.current = null
+    }, 1500)
   }
+
+  const breadcrumb = buildInspectBreadcrumb(contractId, keyPath)
 
   return (
     <div className="flex flex-col gap-6 p-6 lg:p-10 max-w-6xl mx-auto w-full">
@@ -51,77 +102,188 @@ export function InspectShell({
           </Heading>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <Link
+            to="/contracts/$contractId/explorer"
+            params={{ contractId }}
+            search={{
+              keys: '',
+              mode: isSampleContractId(normalizedContractId || contractId)
+                ? 'demo'
+                : 'live',
+            }}
+            aria-label="Back to explorer"
+            className="text-sm text-primary hover:underline font-mono whitespace-nowrap"
+          >
+            ← Explorer
+          </Link>
           <IconButton
             icon="pin"
             altText="Add to watchlist"
             onClick={handlePinKey}
-            disabled={!keyPath}
+            disabled={!entry || !keyPath || Boolean(keyPathError)}
             aria-label="Add to watchlist"
           />
         </div>
       </header>
 
-      <div className="flex items-center gap-2 text-sm text-text-muted font-mono">
-        <span>Contract</span>
-        <span>/</span>
-        <span className="text-white truncate">{keyPath || 'No key selected'}</span>
-      </div>
+      {isSampleContractId(normalizedContractId || contractId) && (
+        <LocalDemoNotice />
+      )}
 
-      <Card>
-        <div className="p-6 space-y-4">
-          <Heading
-            size="sm"
-            as="h3"
-            className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
-          >
-            Metadata
-          </Heading>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-1">
-                Durability
-              </div>
-              <div className="text-white font-mono">{metadata.durability}</div>
-            </div>
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-1">
-                Last Modified Ledger
-              </div>
-              <div className="text-white font-mono">{metadata.lastModifiedLedger}</div>
-            </div>
-            <div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-1">
-                Expiration Ledger
-              </div>
-              <div className="text-white font-mono">
-                {metadata.expirationLedger ?? 'N/A'}
-              </div>
-            </div>
+      {watchlistFeedback ? (
+        <p role="status" aria-live="polite" className="text-sm text-text-muted">
+          {watchlistFeedback}
+        </p>
+      ) : null}
+
+      <nav
+        aria-label="Inspect breadcrumb"
+        className="flex flex-wrap items-center gap-1 text-sm text-text-muted font-mono overflow-hidden"
+      >
+        {breadcrumb.segments.map((segment, index) => {
+          const isLast = index === breadcrumb.segments.length - 1
+          return (
+            <span
+              key={`${index}-${segment.label}`}
+              className="flex items-center gap-1 min-w-0"
+            >
+              <span
+                title={segment.title ?? segment.label}
+                className={
+                  isLast
+                    ? 'text-white truncate max-w-[16rem]'
+                    : 'text-text-muted truncate max-w-[12rem]'
+                }
+              >
+                {segment.label}
+              </span>
+              {!isLast ? (
+                <span className="text-text-muted shrink-0">/</span>
+              ) : null}
+            </span>
+          )
+        })}
+      </nav>
+
+      {keyPathError ? (
+        <Card>
+          <div className="p-6 space-y-2">
+            <Heading size="sm" as="h2" className="text-white">
+              Invalid key path
+            </Heading>
+            <p className="text-sm text-text-muted">{keyPathError}</p>
           </div>
-        </div>
-      </Card>
+        </Card>
+      ) : null}
 
-      <Card>
-        <div className="p-6 space-y-4">
-          <div className="flex items-center justify-between gap-4">
+      {schemaMismatch ? (
+        <Card>
+          <div className="p-6 space-y-2" role="alert">
+            <Heading size="sm" as="h2" className="text-white">
+              Schema mismatch
+            </Heading>
+            <p className="text-sm text-text-muted font-mono break-all">
+              Key path: {schemaMismatch.keyPath}
+            </p>
+            <p className="text-sm text-text-muted">
+              Expected type:{' '}
+              <span className="font-mono text-white">
+                {schemaMismatch.expectedType}
+              </span>
+            </p>
+            <p className="text-sm text-text-muted">
+              Actual type:{' '}
+              <span className="font-mono text-white">
+                {schemaMismatch.actualType}
+              </span>
+            </p>
+          </div>
+        </Card>
+      ) : null}
+
+      {!keyPathError && !entry ? (
+        <Card>
+          <div className="p-6 space-y-2" role="status">
+            <Heading size="sm" as="h2" className="text-white">
+              Entry not found
+            </Heading>
+            <p className="text-sm text-text-muted">
+              This key path does not match a stored ledger entry.
+            </p>
+          </div>
+        </Card>
+      ) : null}
+
+      {entry ? (
+        <Card>
+          <div className="p-6 space-y-4">
             <Heading
               size="sm"
               as="h3"
               className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
             >
-              Raw XDR
+              Metadata
             </Heading>
-            <Button variant="secondary" size="sm" onClick={handleCopyXDR}>
-              Copy
-            </Button>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-1">
+                  Durability
+                </div>
+                <div className="text-white font-mono">
+                  {entry.durability ?? 'N/A'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-1">
+                  Last Modified Ledger
+                </div>
+                <div className="text-white font-mono">
+                  {entry.lastModifiedLedger > 0
+                    ? entry.lastModifiedLedger
+                    : 'N/A'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-text-muted mb-1">
+                  Expiration Ledger
+                </div>
+                <div className="text-white font-mono">
+                  {entry.expirationLedger ?? 'N/A'}
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="bg-surface-dark rounded p-3 max-h-48 overflow-auto">
-            <code className="text-xs text-text-secondary font-mono break-words">
-              AAAAEgAAAAEAAAABAAAABQAAADEAA...
-            </code>
+        </Card>
+      ) : null}
+
+      {entry ? (
+        <Card>
+          <div className="p-6 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <Heading
+                size="sm"
+                as="h3"
+                className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+              >
+                Raw XDR
+              </Heading>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleCopyXDR}
+                disabled={!entry.rawXdr}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+            <div className="bg-surface-dark rounded p-3 max-h-48 overflow-auto">
+              <code className="text-xs text-text-secondary font-mono break-words">
+                {entry.rawXdr || 'Raw XDR is not available for this entry.'}
+              </code>
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      ) : null}
     </div>
   )
 }

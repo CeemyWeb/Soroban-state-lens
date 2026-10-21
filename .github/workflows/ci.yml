@@ -29,5 +29,29 @@ jobs:
       - name: Run Build
         run: bun run build
 
+      - name: Check Bundle Size Budgets
+        run: bun run check:bundle-size
+
       - name: Run Test
         run: bun run test
+
+  decoder-worker-browser:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Run browser worker regression
+        run: bun run test:worker-browser
