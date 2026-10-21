@@ -194,6 +194,68 @@ describe('LensStore Hydration', () => {
     })
   })
 
+  it('restores contract snapshots only from their own network bucket after reload', async () => {
+    const createEntry = (value: number) => ({
+      key: 'value-key',
+      contractId: 'C1',
+      type: 'ContractData' as const,
+      value,
+      lastModifiedLedger: value,
+    })
+
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.testnet)
+    useLensStore
+      .getState()
+      .addSnapshot('C1', { 'value-key': createEntry(42) }, 42, 'Testnet')
+    useLensStore.getState().addSnapshot(
+      'OtherContract',
+      {
+        other: {
+          ...createEntry(7),
+          key: 'other',
+          contractId: 'OtherContract',
+        },
+      },
+      7,
+      'Other testnet contract',
+    )
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.mainnet)
+    useLensStore
+      .getState()
+      .addSnapshot('C1', { 'value-key': createEntry(99) }, 99, 'Mainnet')
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+
+    useLensStore.setState({ snapshots: {} })
+    if (savedState === null) throw new Error('Snapshots were not persisted')
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    expect(
+      useLensStore.getState().getSnapshots('C1')[0]?.ledgerData,
+    ).toMatchObject({
+      'value-key': { value: 99 },
+    })
+
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.testnet)
+    expect(
+      useLensStore.getState().getSnapshots('C1')[0]?.ledgerData,
+    ).toMatchObject({
+      'value-key': { value: 42 },
+    })
+    expect(
+      useLensStore.getState().getSnapshots('OtherContract')[0]?.ledgerData,
+    ).toMatchObject({ other: { value: 7 } })
+
+    useLensStore.getState().setNetworkConfig(DEFAULT_NETWORKS.mainnet)
+    expect(
+      useLensStore.getState().getSnapshots('C1')[0]?.ledgerData,
+    ).toMatchObject({
+      'value-key': { value: 99 },
+    })
+  })
+
   it('persists a decoded map entry with key metadata and its child value', async () => {
     const scVal = xdr.ScVal.scvMap([
       new xdr.ScMapEntry({
