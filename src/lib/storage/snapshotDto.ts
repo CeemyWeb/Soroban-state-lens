@@ -181,6 +181,8 @@ function isValidSnapshotHeader(
     value.contractId === contractId &&
     Number.isSafeInteger(value.timestamp) &&
     (value.timestamp as number) >= 0 &&
+    Number.isSafeInteger(value.ledgerSequence) &&
+    (value.ledgerSequence as number) >= 0 &&
     (value.label === undefined || typeof value.label === 'string')
   )
 }
@@ -223,6 +225,7 @@ export function parsePersistedSnapshots(
         id: candidate.id,
         contractId,
         timestamp: candidate.timestamp,
+        ledgerSequence: candidate.ledgerSequence,
         ledgerData,
         ...(candidate.label !== undefined ? { label: candidate.label } : {}),
       })

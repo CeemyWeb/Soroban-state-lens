@@ -95,17 +95,21 @@ async function runRegression(): Promise<void> {
 
     const contractId = 'C-browser-worker-regression'
     const key = `${contractId}::persistent::counter`
-    useLensStore.getState().addSnapshot(contractId, {
-      [key]: {
-        key,
-        contractId,
-        type: 'ContractData',
-        durability: 'Persistent',
-        value: scalar,
-        lastModifiedLedger: 42,
-        rawXdr: scalarXdr.toXDR('base64'),
+    useLensStore.getState().addSnapshot(
+      contractId,
+      {
+        [key]: {
+          key,
+          contractId,
+          type: 'ContractData',
+          durability: 'Persistent',
+          value: scalar,
+          lastModifiedLedger: 42,
+          rawXdr: scalarXdr.toXDR('base64'),
+        },
       },
-    })
+      42,
+    )
     const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
     assert(savedState !== null, 'Snapshot state was not persisted')
     const persistedSnapshot =

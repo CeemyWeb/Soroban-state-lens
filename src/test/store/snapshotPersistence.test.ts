@@ -67,13 +67,15 @@ describe('snapshot persistence', () => {
       rpcUrl: 'https://soroban-testnet.stellar.org',
     })
     useLensStore.getState().setByteDisplayMode(ByteDisplayMode.BASE64)
-    useLensStore.getState().setBigIntDisplayMode(BigIntDisplayMode.FORMATTED)
-    useLensStore.getState().addSnapshot(contractId, { [key]: capturedEntry })
+    useLensStore.getState().setBigIntDisplayMode(BigIntDisplayMode.SCIENTIFIC)
+    useLensStore
+      .getState()
+      .addSnapshot(contractId, { [key]: capturedEntry }, 100)
 
     const persistedText = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
     expect(persistedText).not.toBeNull()
     const persisted = JSON.parse(persistedText!)
-    const snapshot = persisted.state.snapshots[contractId][0]
+    const snapshot = persisted.state.snapshots.testnet[contractId][0]
     snapshot.ledgerData.invalid = {
       ...snapshot.ledgerData[key],
       key: 'invalid',
@@ -97,9 +99,12 @@ describe('snapshot persistence', () => {
     const state = useLensStore.getState()
     const [restored] = state.getSnapshots(contractId)
     expect(restored.ledgerData).toEqual({ [key]: capturedEntry })
+    expect(restored.ledgerSequence).toBe(100)
     expect(state.networkConfig.networkId).toBe('testnet')
-    expect(state.byteDisplayMode).toBe(ByteDisplayMode.BASE64)
-    expect(state.bigIntDisplayMode).toBe(BigIntDisplayMode.FORMATTED)
+    expect(state.preferences.byteDisplayMode).toBe(ByteDisplayMode.BASE64)
+    expect(state.preferences.bigIntDisplayMode).toBe(
+      BigIntDisplayMode.SCIENTIFIC,
+    )
   })
 
   it('returns an explicit result for unsupported value data', () => {

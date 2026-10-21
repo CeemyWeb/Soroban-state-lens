@@ -48,13 +48,6 @@ export interface PersistedState {
   snapshots?: NetworkScopedContractBuckets<Array<ContractSnapshot>>
 }
 
-interface MergedPersistedState {
-  networkConfig: NetworkConfig
-  snapshots?: Record<string, Array<PersistedContractSnapshot>>
-  byteDisplayMode?: ByteDisplayMode
-  bigIntDisplayMode?: BigIntDisplayMode
-}
-
 /**
  * Validates that a value is a valid NetworkConfig object
  */

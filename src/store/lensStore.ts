@@ -826,6 +826,9 @@ const deduplicateWatchlistItems = (
 ): Array<WatchlistItem> => {
   const seen = new Set<string>()
   return [...(items ?? [])]
+    .filter(
+      (item): item is WatchlistItem => item !== null && item !== undefined,
+    )
     .sort(
       (left, right) =>
         right.timestamp - left.timestamp ||
