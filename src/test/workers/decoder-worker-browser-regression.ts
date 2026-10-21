@@ -1,4 +1,4 @@
-import { xdr } from '@stellar/stellar-sdk'
+import { Address, xdr } from '@stellar/stellar-sdk'
 import { useLensStore } from '../../store/lensStore'
 import { isDecoderWorkerError } from '../../types/decoder-worker'
 import { createDecoderWorkerSafe } from '../../workers/createDecoderWorkerSafe'
@@ -7,11 +7,12 @@ import {
   toRawXdrFallback,
 } from '../../workers/recoveringDecoder'
 
-function showResult(value: string): void {
+function showResult(value: string, status: 'passed' | 'failed'): void {
   const outputElement = document.querySelector<HTMLPreElement>('#result')
   if (!outputElement) {
     throw new Error('Missing decoder regression result element')
   }
+  outputElement.dataset.status = status
   outputElement.textContent = value
 }
 
@@ -107,6 +108,50 @@ async function runRegression(): Promise<void> {
         `Fresh worker did not return a serializable map: ${isDecoderWorkerError(mapReply) ? mapReply.message : mapReply.kind}`,
       )
     }
+
+    const publicKey = new Uint8Array(32).fill(1)
+    const contractBytes = new Uint8Array(32).fill(2)
+    for (const address of [
+      Address.account(publicKey as Buffer),
+      Address.contract(contractBytes as Buffer),
+    ]) {
+      const addressReply = await decoder.decodeScVal(
+        address.toScVal().toXDR('base64'),
+      )
+      if (
+        isDecoderWorkerError(addressReply) ||
+        addressReply.kind !== 'address' ||
+        addressReply.value !== address.toString() ||
+        addressReply.raw.value !== address.toString()
+      ) {
+        throw new Error(
+          `Address reply did not preserve clone-safe StrKey data: ${JSON.stringify(addressReply)}`,
+        )
+      }
+      structuredClone(addressReply)
+    }
+
+    const nestedMap = xdr.ScVal.scvMap([
+      new xdr.ScMapEntry({
+        key: xdr.ScVal.scvSymbol('nested'),
+        val: xdr.ScVal.scvVec([xdr.ScVal.scvU32(42)]),
+      }),
+    ])
+    const truncatedReply = await decoder.decodeScVal(
+      nestedMap.toXDR('base64'),
+      { maxDepth: 2 },
+    )
+    if (
+      isDecoderWorkerError(truncatedReply) ||
+      truncatedReply.kind !== 'map' ||
+      truncatedReply.entries[0]?.value.kind !== 'vec' ||
+      truncatedReply.entries[0].value.items[0]?.kind !== 'truncated' ||
+      truncatedReply.entries[0].value.items[0].depth !== 2 ||
+      truncatedReply.entries[0].value.items[0].path.length !== 2
+    ) {
+      throw new Error('Nested browser reply lost its truncation metadata')
+    }
+    structuredClone(truncatedReply)
 
     const store = useLensStore.getState()
     store.addSnapshot(
@@ -204,11 +249,15 @@ async function runRegression(): Promise<void> {
           firstEntry: 'raw-XDR fallback after failed worker reply',
           secondEntry: 'decoded vector [7, 9]',
           nestedMap: 'decoded map containing vector [7, 9]',
+          addresses: 'account and contract StrKeys retained across Comlink',
+          truncation:
+            'nested map/vector depth and path retained across Comlink',
           reloadedSnapshot: 'ordered values and child paths retained',
         },
         null,
         2,
       ),
+      'passed',
     )
   } finally {
     decoder.terminate()
@@ -218,6 +267,11 @@ async function runRegression(): Promise<void> {
 
 void runRegression().catch((error: unknown) => {
   showResult(
-    `FAILED: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
+    JSON.stringify({
+      status: 'failed',
+      error:
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
+    }),
+    'failed',
   )
 })
