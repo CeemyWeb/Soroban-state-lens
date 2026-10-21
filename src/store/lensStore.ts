@@ -17,21 +17,24 @@ import {
   limitDecoderErrorDetail,
 } from '../types/decoder-worker'
 import {
-  createDecoderWorkerSafe,
-  terminateDecoderWorkerSafe,
-} from '../workers/createDecoderWorkerSafe'
+  RecoveringDecoder,
+  toRawXdrFallback,
+} from '../workers/recoveringDecoder'
 import { normalizeNetworkScopeId } from './networkScope'
 import { createContractSlice } from './contractSlice'
 import { createContractSpecSlice } from './contractSpecSlice'
 import {
   DEFAULT_NETWORK_CONFIG,
   NETWORK_CONFIG_STORAGE_KEY,
+  PERSISTED_STATE_VERSION,
   createSafeStorage,
   mergeNetworkConfig,
   mergePreferences,
+  mergeSnapshots,
   sanitizeNetworkSnapshots,
   serializeNetworkConfigForStorage,
 } from './persistence'
+import { serializeSnapshots } from './snapshotPersistence'
 import { createPreferencesSlice } from './preferencesSlice'
 import {
   ConnectionStatus,
@@ -41,8 +44,6 @@ import {
   DEFAULT_SNAPSHOT_RETENTION_LIMIT,
 } from './types'
 
-import type * as Comlink from 'comlink'
-import type { DecoderWorkerApi } from '../types/decoder-worker'
 import type { Node } from '../types/node'
 import type { PersistedState } from './persistence'
 import type {
@@ -63,16 +64,6 @@ export type { LedgerEntry, LedgerKey } from './types'
 
 // Re-export for backwards compatibility
 export { DEFAULT_NETWORKS }
-
-function getDecoderFailureReason(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
-  }
-  if (typeof error === 'string' && error.trim()) {
-    return error
-  }
-  return 'Decoder worker failed'
-}
 
 /**
  * Network config slice creator
@@ -465,6 +456,7 @@ const createContractLoadSlice = (
   let requestId = 0
   let activeController: AbortController | null = null
   let activeDecodeBatch: Promise<void> | null = null
+  let activeDecoder: RecoveringDecoder | null = null
 
   const getAttemptCount = (error: unknown): number | null => {
     if (typeof error !== 'object' || error === null || !('attempts' in error)) {
@@ -511,6 +503,8 @@ const createContractLoadSlice = (
       if (activeController) {
         activeController.abort()
       }
+      activeDecoder?.terminate()
+      activeDecoder = null
 
       if (isSampleContractId(contractId)) {
         activeController = null
@@ -531,6 +525,7 @@ const createContractLoadSlice = (
 
       const controller = new AbortController()
       activeController = controller
+      let decoder: RecoveringDecoder | null = null
       const { signal } = controller
       const isRequestStale = () =>
         currentRequestId !== requestId || signal.aborted
@@ -575,139 +570,94 @@ const createContractLoadSlice = (
           ReturnType<typeof decodeLedgerKeyInfo>
         > = {}
         const foreignContractKeys = new Set<string>()
-        let workerUnavailableReason: string | null = null
+        const recoveringDecoder = new RecoveringDecoder()
+        decoder = recoveringDecoder
+        activeDecoder = recoveringDecoder
 
         const decodeBatch = async () => {
-          let activeDecoderWorker: Comlink.Remote<DecoderWorkerApi> | null =
-            null
-          try {
-            for (const entry of entries) {
-              if (isRequestStale()) {
-                return
-              }
-
-              const keyInfo = decodeLedgerKeyInfo(entry.key)
-              keyInfoByKey[entry.key] = keyInfo
-              if (keyInfo.type !== 'ContractData') {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                continue
-              }
-
-              if (
-                keyInfo.contractId &&
-                isContractId(contractId) &&
-                keyInfo.contractId !== contractId
-              ) {
-                foreignContractKeys.add(entry.key)
-                continue
-              }
-
-              let metadata: ReturnType<typeof decodeLedgerEntryMetadata>
-              try {
-                metadata = decodeLedgerEntryMetadata(entry)
-              } catch {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                decodeErrorReasonsByKey[entry.key] = 'invalid-ledger-entry-data'
-                continue
-              }
-
-              if (
-                metadata.contractId &&
-                isContractId(contractId) &&
-                metadata.contractId !== contractId
-              ) {
-                foreignContractKeys.add(entry.key)
-                continue
-              }
-
-              metadataByKey[entry.key] = metadata
-              if (
-                metadata.type !== 'ContractData' ||
-                metadata.storageKeyXdr === undefined ||
-                metadata.valueXdr === undefined
-              ) {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                continue
-              }
-
-              if (
-                activeDecoderWorker === null &&
-                workerUnavailableReason === null
-              ) {
-                try {
-                  activeDecoderWorker = await createDecoderWorkerSafe()
-                } catch (error) {
-                  workerUnavailableReason = getDecoderFailureReason(error)
-                }
-              }
-
-              if (isRequestStale()) {
-                return
-              }
-
-              if (activeDecoderWorker === null) {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                decodeErrorReasonsByKey[entry.key] =
-                  workerUnavailableReason ?? 'Decoder worker failed'
-                continue
-              }
-
-              try {
-                const decodedStorageKey = await activeDecoderWorker.decodeScVal(
-                  {
-                    xdr: metadata.storageKeyXdr,
-                  },
-                )
-                if (isRequestStale()) {
-                  return
-                }
-                if (!isDecoderWorkerError(decodedStorageKey)) {
-                  decodedStorageKeysByKey[entry.key] = decodedStorageKey
-                }
-
-                const result = await activeDecoderWorker.decodeScVal({
-                  xdr: metadata.valueXdr,
-                })
-                if (isRequestStale()) {
-                  return
-                }
-
-                if (isDecoderWorkerError(result)) {
-                  decodedValuesByKey[entry.key] = {
-                    kind: 'raw-xdr',
-                    xdr: entry.xdr,
-                  }
-                  decodeErrorReasonsByKey[entry.key] =
-                    result.message.trim() || 'Decoder worker failed'
-                } else {
-                  decodedValuesByKey[entry.key] = result
-                }
-              } catch (error) {
-                decodedValuesByKey[entry.key] = {
-                  kind: 'raw-xdr',
-                  xdr: entry.xdr,
-                }
-                decodeErrorReasonsByKey[entry.key] =
-                  getDecoderFailureReason(error)
-                terminateDecoderWorkerSafe(activeDecoderWorker)
-                activeDecoderWorker = null
-              }
+          for (const entry of entries) {
+            if (isRequestStale()) {
+              return
             }
-          } finally {
-            if (activeDecoderWorker !== null) {
-              terminateDecoderWorkerSafe(activeDecoderWorker)
+
+            const keyInfo = decodeLedgerKeyInfo(entry.key)
+            keyInfoByKey[entry.key] = keyInfo
+            if (keyInfo.type !== 'ContractData') {
+              decodedValuesByKey[entry.key] = {
+                kind: 'raw-xdr',
+                xdr: entry.xdr,
+              }
+              continue
+            }
+
+            if (
+              keyInfo.contractId &&
+              isContractId(contractId) &&
+              keyInfo.contractId !== contractId
+            ) {
+              foreignContractKeys.add(entry.key)
+              continue
+            }
+
+            let metadata: ReturnType<typeof decodeLedgerEntryMetadata>
+            try {
+              metadata = decodeLedgerEntryMetadata(entry)
+            } catch {
+              decodedValuesByKey[entry.key] = {
+                kind: 'raw-xdr',
+                xdr: entry.xdr,
+              }
+              decodeErrorReasonsByKey[entry.key] = 'invalid-ledger-entry-data'
+              continue
+            }
+
+            if (
+              metadata.contractId &&
+              isContractId(contractId) &&
+              metadata.contractId !== contractId
+            ) {
+              foreignContractKeys.add(entry.key)
+              continue
+            }
+
+            metadataByKey[entry.key] = metadata
+            if (
+              metadata.type !== 'ContractData' ||
+              metadata.storageKeyXdr === undefined ||
+              metadata.valueXdr === undefined
+            ) {
+              decodedValuesByKey[entry.key] = {
+                kind: 'raw-xdr',
+                xdr: entry.xdr,
+              }
+              continue
+            }
+
+            const decodedStorageKey = await recoveringDecoder.decodeScVal(
+              metadata.storageKeyXdr,
+            )
+            if (isRequestStale()) {
+              return
+            }
+            if (!isDecoderWorkerError(decodedStorageKey)) {
+              decodedStorageKeysByKey[entry.key] = decodedStorageKey
+            }
+
+            const result = await recoveringDecoder.decodeScVal(
+              metadata.valueXdr,
+            )
+            if (isRequestStale()) {
+              return
+            }
+
+            if (isDecoderWorkerError(result)) {
+              const fallback = toRawXdrFallback(entry.xdr, result)
+              decodedValuesByKey[entry.key] = fallback
+              if (fallback.reason) {
+                decodeErrorReasonsByKey[entry.key] = fallback.reason
+              }
+            } else {
+              decodedValuesByKey[entry.key] = result
             }
           }
         }
@@ -780,6 +730,10 @@ const createContractLoadSlice = (
           contractLoadAttemptCount: getAttemptCount(error),
         }))
       } finally {
+        decoder?.terminate()
+        if (activeDecoder === decoder) {
+          activeDecoder = null
+        }
         if (activeController === controller) {
           activeController = null
         }
@@ -989,13 +943,14 @@ export const useLensStore = create<LensStore>()(
     {
       name: NETWORK_CONFIG_STORAGE_KEY,
       storage: createSafeStorage<PersistedState>(),
-      version: 1,
+      version: PERSISTED_STATE_VERSION,
       migrate: (persistedState, version) => {
         if (
           typeof persistedState !== 'object' ||
           persistedState === null ||
           version === 0 ||
-          version === 1
+          version === 1 ||
+          version === PERSISTED_STATE_VERSION
         ) {
           return persistedState as PersistedState
         }
@@ -1014,19 +969,26 @@ export const useLensStore = create<LensStore>()(
         networkConfig: serializeNetworkConfigForStorage(state.networkConfig),
         preferences: state.preferences,
         watchlist: state.watchlist,
-        snapshots: sanitizeNetworkSnapshots(
-          state.snapshots,
-          state.networkConfig.networkId,
+        snapshots: serializeSnapshots(
+          sanitizeNetworkSnapshots(
+            state.snapshots,
+            state.networkConfig.networkId,
+          ),
         ),
       }),
       // Validate and merge persisted data safely
       merge: (persistedState, currentState) => {
         const mergedNetwork = mergeNetworkConfig(persistedState, currentState)
         const mergedPreferences = mergePreferences(persistedState, currentState)
+        const snapshots = mergeSnapshots(
+          persistedState,
+          mergedNetwork.networkConfig.networkId,
+        )
         return {
           ...currentState,
           ...mergedNetwork,
           ...mergedPreferences,
+          snapshots,
         }
       },
     },

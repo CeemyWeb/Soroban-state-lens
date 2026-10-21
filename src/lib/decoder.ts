@@ -1,6 +1,13 @@
 import * as Comlink from 'comlink'
 import { isDecoderWorkerError } from '../types/decoder-worker'
-import type { DecoderWorkerApi } from '../types/decoder-worker'
+import {
+  DEFAULT_DECODE_TIMEOUT_MS,
+  withDecodeTimeout,
+} from '../workers/withDecodeTimeout'
+import type {
+  DecodeScValResult,
+  DecoderWorkerApi,
+} from '../types/decoder-worker'
 import type { Node } from '../types/node'
 
 /**
@@ -20,7 +27,11 @@ export async function decodeScVal(xdrString: string): Promise<Node> {
   const decoder = Comlink.wrap<DecoderWorkerApi>(worker)
 
   try {
-    const result = await decoder.decodeScVal({ xdr: xdrString })
+    const result = await withDecodeTimeout<DecodeScValResult>(
+      decoder.decodeScVal({ xdr: xdrString }).then((value) => value),
+      () => worker.terminate(),
+      DEFAULT_DECODE_TIMEOUT_MS,
+    )
 
     if (isDecoderWorkerError(result)) {
       const errorMsg = result.message || 'Unknown decoder worker error'
