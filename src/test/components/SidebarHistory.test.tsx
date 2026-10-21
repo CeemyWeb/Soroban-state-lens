@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Sidebar from '../../components/global/Sidebar'
 import { resetStore, useLensStore } from '../../store/lensStore'
 import { formatContractIdShort } from '../../lib/format/formatContractIdShort'
+import { NETWORK_CONFIG_STORAGE_KEY } from '../../store/persistence'
 import type { LedgerEntry } from '../../store/types'
 
 const makeEntry = (
@@ -232,6 +233,100 @@ describe('Sidebar History Panel', () => {
     expect(screen.getAllByText('Middle').length).toBeGreaterThan(0)
     expect(screen.getByText('~0')).toBeTruthy()
     expect(screen.getByText('1')).toBeTruthy()
+  })
+
+  it('downloads the 42-to-43 diff after snapshots are rehydrated', async () => {
+    const state = useLensStore.getState()
+    state.addSnapshot('c1', { key: makeEntry('key', 'c1', 42) }, 42, 'Before')
+    state.addSnapshot('c1', { key: makeEntry('key', 'c1', 43) }, 43, 'After')
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+
+    resetStore()
+    if (savedState === null) throw new Error('Snapshots were not persisted')
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+    useLensStore.getState().setActiveContractId('c1')
+
+    let downloadedBlob:
+      | { type: string; text: () => Promise<string> }
+      | undefined
+    vi.stubGlobal(
+      'Blob',
+      class {
+        type: string
+        private readonly content: Array<string | BlobPart>
+
+        constructor(
+          content: Array<string | BlobPart>,
+          options: { type: string },
+        ) {
+          this.content = content
+          this.type = options.type
+        }
+
+        text() {
+          return Promise.resolve(this.content.join(''))
+        }
+      },
+    )
+    const createObjectURLDescriptor = Object.getOwnPropertyDescriptor(
+      URL,
+      'createObjectURL',
+    )
+    const revokeObjectURLDescriptor = Object.getOwnPropertyDescriptor(
+      URL,
+      'revokeObjectURL',
+    )
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn((blob: { type: string; text: () => Promise<string> }) => {
+        downloadedBlob = blob
+        return 'blob:download'
+      }),
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    const linkClick = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(() => {})
+
+    try {
+      render(<Sidebar open={true} onClose={vi.fn()} activeNavItem="history" />)
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Download snapshot diff as JSON' }),
+      )
+
+      expect(linkClick).toHaveBeenCalledOnce()
+      expect(downloadedBlob?.type).toBe('application/json')
+      const exported = JSON.parse(await downloadedBlob!.text()) as {
+        diff: Array<{
+          prevEntry: { value: unknown }
+          nextEntry: { value: unknown }
+        }>
+        summary: { modified: number }
+      }
+      expect(exported.summary.modified).toBe(1)
+      expect(exported.diff).toContainEqual(
+        expect.objectContaining({
+          prevEntry: expect.objectContaining({ value: 42 }),
+          nextEntry: expect.objectContaining({ value: 43 }),
+        }),
+      )
+    } finally {
+      if (createObjectURLDescriptor) {
+        Object.defineProperty(URL, 'createObjectURL', createObjectURLDescriptor)
+      } else {
+        Reflect.deleteProperty(URL, 'createObjectURL')
+      }
+      if (revokeObjectURLDescriptor) {
+        Object.defineProperty(URL, 'revokeObjectURL', revokeObjectURLDescriptor)
+      } else {
+        Reflect.deleteProperty(URL, 'revokeObjectURL')
+      }
+    }
   })
 
   it('blocks comparison and export when either selected snapshot is incomplete', () => {
