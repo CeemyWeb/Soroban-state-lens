@@ -46,6 +46,14 @@ Soroban stores data in the ledger as ScVal (Stellar Contract Values) within Cont
 4. Start the development server:  
    `npm run dev` or `bun run dev`
 
+### **Browser Worker Regression**
+
+With the development server running, open
+`http://localhost:3000/src/test/browser/decoder-worker-regression.html` in a
+browser. The page exercises account and contract addresses, nested collection
+truncation, and persistence of a scalar value decoded by the real Vite worker.
+The results element reports `data-status="passed"` when all checks succeed.
+
 ## **🛠 Project Architecture**
 
 The project is split into three main layers:

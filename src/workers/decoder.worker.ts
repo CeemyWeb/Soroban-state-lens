@@ -1,7 +1,8 @@
 import * as Comlink from 'comlink'
-import { xdr } from '@stellar/stellar-sdk'
+import { Address, xdr } from '@stellar/stellar-sdk'
 import { normalizeScAddress, normalizeScVal } from './decoder/normalizeScVal'
 import { ScValType, normalizeNode } from './decoder/normalizeNode'
+import type { ScVal as PlainScVal } from './decoder/normalizeNode'
 import type {
   DecodeScValRequest,
   DecodeScValResult,
@@ -11,6 +12,107 @@ import type {
   NormalizeResult,
   PingResponse,
 } from '../types/decoder-worker'
+
+function cloneSafeXdrValue(value: unknown): unknown {
+  if (typeof value === 'bigint') {
+    return value.toString()
+  }
+  if (value === null || typeof value !== 'object') {
+    return value
+  }
+  if (value instanceof Uint8Array) {
+    return new Uint8Array(value)
+  }
+  if (Array.isArray(value)) {
+    return value.map(cloneSafeXdrValue)
+  }
+
+  const result: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== 'function') {
+      result[key] = cloneSafeXdrValue(item)
+    }
+  }
+  return result
+}
+
+function toPlainScVal(scVal: ReturnType<typeof xdr.ScVal.fromXDR>): PlainScVal {
+  const switchName = scVal.switch().name
+  const normalizedSwitch = (switchName.charAt(0).toUpperCase() +
+    switchName.slice(1)) as ScValType
+  const value = scVal.value()
+
+  switch (normalizedSwitch) {
+    case ScValType.SCV_VEC:
+      return {
+        switch: normalizedSwitch,
+        value: Array.isArray(value)
+          ? value.map((item) => toPlainScVal(item))
+          : value,
+      }
+    case ScValType.SCV_MAP:
+      return {
+        switch: normalizedSwitch,
+        value: Array.isArray(value)
+          ? value.map((entry) => ({
+              key: toPlainScVal(entry.key()),
+              val: toPlainScVal(entry.val()),
+            }))
+          : value,
+      }
+    case ScValType.SCV_ADDRESS:
+      return {
+        switch: normalizedSwitch,
+        value: Address.fromScVal(scVal).toString(),
+      }
+    case ScValType.SCV_STRING:
+    case ScValType.SCV_SYMBOL:
+      return {
+        switch: normalizedSwitch,
+        value: typeof value === 'string' ? value : value?.toString(),
+      }
+    case ScValType.SCV_U64:
+    case ScValType.SCV_I64:
+      return { switch: normalizedSwitch, value: value?.toString() }
+    case ScValType.SCV_U128:
+    case ScValType.SCV_I128: {
+      const parts = value as {
+        hi: () => { toString: () => string }
+        lo: () => { toString: () => string }
+      }
+      return {
+        switch: normalizedSwitch,
+        value: {
+          hi: parts.hi().toString(),
+          lo: parts.lo().toString(),
+        },
+      }
+    }
+    case ScValType.SCV_U256:
+    case ScValType.SCV_I256: {
+      const parts = value as {
+        hiHi: () => { toString: () => string }
+        hiLo: () => { toString: () => string }
+        loHi: () => { toString: () => string }
+        loLo: () => { toString: () => string }
+      }
+      return {
+        switch: normalizedSwitch,
+        value: {
+          hiHi: parts.hiHi().toString(),
+          hiLo: parts.hiLo().toString(),
+          loHi: parts.loHi().toString(),
+          loLo: parts.loLo().toString(),
+        },
+      }
+    }
+    default:
+      return {
+        switch: normalizedSwitch,
+        value: cloneSafeXdrValue(value),
+      }
+  }
+}
 
 /**
  * Implements the typed decoder worker API.
@@ -64,41 +166,15 @@ export const decoderWorkerApi: DecoderWorkerApi = {
     try {
       const { xdr: xdrString, maxDepth } = request
 
-      // Decode the ScVal from XDR
+      // Decode the XDR into plain data before normalization so nested SDK
+      // objects never cross the worker boundary.
       const scValXdr = xdr.ScVal.fromXDR(xdrString, 'base64')
-
-      // Map to the plain ScVal structure expected by normalizeNode.
-      // For the simplified smoke method, we only support primitives.
-      const rawSwitchName = scValXdr.switch().name
-      // Normalize to PascalCase (e.g., scvBool -> ScvBool) to match ScValType enum
-      const switchName = (rawSwitchName.charAt(0).toUpperCase() +
-        rawSwitchName.slice(1)) as ScValType
-      let value = scValXdr.value()
-
-      // Ensure primitive values are in a format normalizeNode expects.
-      // stellar-sdk's ScVal.value() returns Buffers for strings and symbols.
-      if (
-        (switchName === ScValType.SCV_STRING ||
-          switchName === ScValType.SCV_SYMBOL) &&
-        typeof value !== 'string' &&
-        value &&
-        typeof value.toString === 'function'
-      ) {
-        value = value.toString()
-      }
-
-      const plainScVal = {
-        switch: switchName,
-        value,
-      }
+      const plainScVal = toPlainScVal(scValXdr)
 
       // Perform full node normalization with optional depth limiting
-      const normalizedNode = normalizeNode(
-        plainScVal,
-        undefined,
-        undefined,
-        { maxDepth },
-      )
+      const normalizedNode = normalizeNode(plainScVal, undefined, undefined, {
+        maxDepth,
+      })
 
       return Promise.resolve(normalizedNode)
     } catch (error) {

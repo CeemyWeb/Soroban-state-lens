@@ -1,10 +1,12 @@
 import { createJSONStorage } from 'zustand/middleware'
 import { parsePersistedNetworkConfig } from '../lib/storage/parsePersistedNetworkConfig'
 import { serializePersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
+import { parsePersistedSnapshots } from '../lib/storage/snapshotDto'
 
-import { DEFAULT_NETWORKS } from './types'
+import { BigIntDisplayMode, ByteDisplayMode, DEFAULT_NETWORKS } from './types'
 import { validateNetworkConfigPatch } from './validateNetworkConfigPatch'
 
+import type { PersistedContractSnapshot } from '../lib/storage/snapshotDto'
 import type { NetworkConfig } from './types'
 import type { PersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
 import type { PersistStorage } from 'zustand/middleware'
@@ -24,10 +26,18 @@ export const DEFAULT_NETWORK_CONFIG: NetworkConfig = DEFAULT_NETWORKS.futurenet
  */
 export interface PersistedState {
   networkConfig: PersistedNetworkConfig
+  snapshots?: Record<string, Array<PersistedContractSnapshot>>
   preferences?: {
     byteDisplayMode: string
     bigIntDisplayMode: string
   }
+}
+
+interface MergedPersistedState {
+  networkConfig: NetworkConfig
+  snapshots?: Record<string, Array<PersistedContractSnapshot>>
+  byteDisplayMode?: ByteDisplayMode
+  bigIntDisplayMode?: BigIntDisplayMode
 }
 
 /**
@@ -105,7 +115,14 @@ export const createSafeStorage = <T>(): PersistStorage<T> | undefined =>
 export function mergeNetworkConfig(
   persistedState: unknown,
   currentState: { networkConfig: NetworkConfig },
-): any {
+): MergedPersistedState {
+  const snapshots =
+    typeof persistedState === 'object' && persistedState !== null
+      ? parsePersistedSnapshots(
+          'snapshots' in persistedState ? persistedState.snapshots : undefined,
+        )
+      : {}
+
   if (
     typeof persistedState === 'object' &&
     persistedState !== null &&
@@ -113,25 +130,39 @@ export function mergeNetworkConfig(
   ) {
     const persisted = persistedState as {
       networkConfig: unknown
-      preferences?: {
-        byteDisplayMode: string
-        bigIntDisplayMode: string
-      }
+      preferences?: unknown
     }
     const parsedNetworkConfig = parsePersistedNetworkConfig(
       persisted.networkConfig,
     )
 
     if (isValidNetworkConfig(parsedNetworkConfig)) {
+      const preferences =
+        typeof persisted.preferences === 'object' &&
+        persisted.preferences !== null
+          ? persisted.preferences
+          : undefined
+      const byteDisplayMode =
+        preferences &&
+        'byteDisplayMode' in preferences &&
+        Object.values(ByteDisplayMode).includes(
+          preferences.byteDisplayMode as ByteDisplayMode,
+        )
+          ? (preferences.byteDisplayMode as ByteDisplayMode)
+          : undefined
+      const bigIntDisplayMode =
+        preferences &&
+        'bigIntDisplayMode' in preferences &&
+        Object.values(BigIntDisplayMode).includes(
+          preferences.bigIntDisplayMode as BigIntDisplayMode,
+        )
+          ? (preferences.bigIntDisplayMode as BigIntDisplayMode)
+          : undefined
       return {
         networkConfig: parsedNetworkConfig,
-        ...(persisted.preferences
-          ? {
-              byteDisplayMode: (persisted.preferences as any).byteDisplayMode,
-              bigIntDisplayMode: (persisted.preferences as any)
-                .bigIntDisplayMode,
-            }
-          : {}),
+        snapshots,
+        ...(byteDisplayMode !== undefined ? { byteDisplayMode } : {}),
+        ...(bigIntDisplayMode !== undefined ? { bigIntDisplayMode } : {}),
       }
     }
 
@@ -142,7 +173,7 @@ export function mergeNetworkConfig(
   }
 
   // Return current state (with defaults) if persisted data is invalid or missing
-  return currentState
+  return { ...currentState, snapshots }
 }
 
 export function serializeNetworkConfigForStorage(

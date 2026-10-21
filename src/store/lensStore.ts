@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 
 import { getLedgerEntries } from '../lib/network/getLedgerEntries'
 import { mapLedgerEntriesToStoreEntries } from '../lib/network/mapLedgerEntriesToStoreEntries'
+import { serializeSnapshots } from '../lib/storage/snapshotDto'
 import { isDecoderWorkerError } from '../types/decoder-worker'
 import { createDecoderWorkerSafe } from '../workers/createDecoderWorkerSafe'
 import {
@@ -33,6 +34,7 @@ import type {
   NetworkConfig,
   NetworkConfigSlice,
   SnapshotSlice,
+  WatchlistItem,
   WatchlistSlice,
 } from './types'
 
@@ -333,11 +335,15 @@ const createContractLoadSlice = (
  * Manages pinned keys for quick access across routes
  */
 const deduplicateWatchlistItems = (
-  items: Array<WatchlistItem> | undefined,
+  items: Array<WatchlistItem | null | undefined> | undefined,
 ): Array<WatchlistItem> => {
   const seen = new Set<string>()
-  return (items ?? []).filter((item) => {
-    if (typeof item?.keyPath !== 'string' || item.keyPath.length === 0) {
+  return (items ?? []).filter((item): item is WatchlistItem => {
+    if (
+      !item ||
+      typeof item.keyPath !== 'string' ||
+      item.keyPath.length === 0
+    ) {
       return false
     }
     if (seen.has(item.keyPath)) {
@@ -356,7 +362,9 @@ const createWatchlistSlice = (
 
   addToWatchlist: (contractId: string, keyPath: string) =>
     set((state) => {
-      const currentItems = deduplicateWatchlistItems(state.watchlist[contractId])
+      const currentItems = deduplicateWatchlistItems(
+        state.watchlist[contractId],
+      )
 
       // Check if item already exists (duplicate protection)
       const isDuplicate = currentItems.some((item) => item.keyPath === keyPath)
@@ -408,6 +416,7 @@ const createWatchlistSlice = (
  * Centralized state management for Soroban State Lens.
  * Includes slices for:
  * - networkConfig: Current network configuration (PERSISTED)
+ * - snapshots: Captured contract state (PERSISTED)
  * - ledgerData: Cached ledger entries (NOT persisted)
  * - expandedNodes: Tree view expansion state (NOT persisted)
  * - contractLoadStatus: Contract fetch lifecycle (NOT persisted)
@@ -428,9 +437,10 @@ export const useLensStore = create<LensStore>()(
     {
       name: NETWORK_CONFIG_STORAGE_KEY,
       storage: createSafeStorage<PersistedState>(),
-      // Persist networkConfig and preferences
+      // Persist networkConfig, preferences, and clone-safe snapshots
       partialize: (state): PersistedState => ({
         networkConfig: serializeNetworkConfigForStorage(state.networkConfig),
+        snapshots: serializeSnapshots(state.snapshots),
         preferences: {
           byteDisplayMode: state.byteDisplayMode,
           bigIntDisplayMode: state.bigIntDisplayMode,
@@ -528,7 +538,8 @@ export const lensActions = {
     useLensStore.getState().setContractLoadStatus(status),
   setContractLoadError: (message: string | null) =>
     useLensStore.getState().setContractLoadError(message),
-  resetContractLoadState: () => useLensStore.getState().resetContractLoadState(),
+  resetContractLoadState: () =>
+    useLensStore.getState().resetContractLoadState(),
   loadContract: (contractId: string, keys: Array<string>) =>
     useLensStore.getState().loadContract(contractId, keys),
 }
