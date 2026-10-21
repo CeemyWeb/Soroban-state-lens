@@ -1,5 +1,5 @@
 import * as Comlink from 'comlink'
-import { xdr } from '@stellar/stellar-sdk'
+import { Address, xdr } from '@stellar/stellar-sdk'
 import { limitDecoderErrorDetail } from '../types/decoder-worker'
 import { normalizeScAddress, normalizeScVal } from './decoder/normalizeScVal'
 import { normalizeNode } from './decoder/normalizeNode'
@@ -133,7 +133,6 @@ function normalizeSdkScVal(value: unknown): ScVal {
       break
     case 'scvString':
     case 'scvSymbol':
-    case 'scvAddress':
       plainValue =
         rawValue !== null &&
         rawValue !== undefined &&
@@ -142,6 +141,11 @@ function normalizeSdkScVal(value: unknown): ScVal {
         typeof rawValue.toString === 'function'
           ? rawValue.toString()
           : rawValue
+      break
+    case 'scvAddress':
+      plainValue = Address.fromScVal(
+        value as ReturnType<typeof xdr.ScVal.fromXDR>,
+      ).toString()
       break
     case 'scvBytes':
       plainValue =
@@ -242,7 +246,8 @@ export const decoderWorkerApi: DecoderWorkerApi = {
     try {
       const { xdr: xdrString, maxDepth } = request
 
-      // Decode the ScVal from XDR
+      // Decode the XDR into plain data before normalization so nested SDK
+      // objects never cross the worker boundary.
       const scValXdr = xdr.ScVal.fromXDR(xdrString, 'base64')
 
       // Convert SDK XDR unions and containers to the plain shape normalizeNode expects.

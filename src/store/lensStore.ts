@@ -776,10 +776,13 @@ const createContractLoadSlice = (
  * Manages pinned keys for quick access across routes
  */
 const deduplicateWatchlistItems = (
-  items: Array<WatchlistItem> | undefined,
+  items: Array<WatchlistItem | null | undefined> | undefined,
 ): Array<WatchlistItem> => {
   const seen = new Set<string>()
   return [...(items ?? [])]
+    .filter(
+      (item): item is WatchlistItem => item !== null && item !== undefined,
+    )
     .sort(
       (left, right) =>
         right.timestamp - left.timestamp ||

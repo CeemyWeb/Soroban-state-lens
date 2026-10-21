@@ -9,6 +9,7 @@ import {
 } from './withDecodeTimeout'
 
 import type {
+  DecodeScValRequest,
   DecodeScValResult,
   DecoderWorkerError,
 } from '../types/decoder-worker'
@@ -42,7 +43,10 @@ export class RecoveringDecoder {
     private readonly timeoutMs: number = DEFAULT_DECODE_TIMEOUT_MS,
   ) {}
 
-  async decodeScVal(xdr: string): Promise<DecodeScValResult> {
+  async decodeScVal(
+    xdr: string,
+    options: Omit<DecodeScValRequest, 'xdr'> = {},
+  ): Promise<DecodeScValResult> {
     if (this.terminated) {
       return {
         code: 'DECODE_WORKER_FAILED',
@@ -56,7 +60,7 @@ export class RecoveringDecoder {
       const activeWorker = this.worker
       worker = activeWorker
       const result = await withDecodeTimeout<DecodeScValResult>(
-        activeWorker.decodeScVal({ xdr }).then((value) => value),
+        activeWorker.decodeScVal({ xdr, ...options }).then((value) => value),
         () => this.dispose(activeWorker),
         this.timeoutMs,
         this.abortController.signal,
