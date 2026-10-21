@@ -25,6 +25,7 @@ describe('lensStore', () => {
     it('initializes with no expanded nodes', () => {
       const state = getStoreState()
       expect(state.expandedNodes).toEqual([])
+      expect(state.expandedNodesByContract).toEqual({})
     })
 
     it('initializes with no selected key path', () => {
@@ -149,6 +150,26 @@ describe('lensStore', () => {
   })
 
   describe('expandedNodes slice', () => {
+    it('keeps expansion state independent for normalized contract IDs', () => {
+      const {
+        toggleExpandedForContract,
+        setExpandedForContract,
+        collapseAllForContract,
+      } = useLensStore.getState()
+
+      toggleExpandedForContract(' cabc ', 'root.child')
+      setExpandedForContract('CDEF', 'root.child', true)
+      expect(getStoreState().expandedNodesByContract).toEqual({
+        CABC: ['root.child'],
+        CDEF: ['root.child'],
+      })
+
+      collapseAllForContract('cabc')
+      expect(getStoreState().expandedNodesByContract).toEqual({
+        CDEF: ['root.child'],
+      })
+    })
+
     it('setExpanded adds node to expanded list', () => {
       const { setExpanded } = useLensStore.getState()
 
@@ -252,7 +273,8 @@ describe('lensStore', () => {
 
   describe('watchlist actions', () => {
     it('ignores blank contract ids and key paths', () => {
-      const { addToWatchlist, getWatchlistForContract } = useLensStore.getState()
+      const { addToWatchlist, getWatchlistForContract } =
+        useLensStore.getState()
 
       addToWatchlist('   ', ' /path/to/key ')
       addToWatchlist('contract-1', '   ')
@@ -263,7 +285,8 @@ describe('lensStore', () => {
     })
 
     it('trims values before duplicate checks and storage', () => {
-      const { addToWatchlist, getWatchlistForContract } = useLensStore.getState()
+      const { addToWatchlist, getWatchlistForContract } =
+        useLensStore.getState()
 
       addToWatchlist('contract-1', '  /path/to/key  ')
       addToWatchlist('contract-1', '/path/to/key')
@@ -282,24 +305,30 @@ describe('lensStore', () => {
       expect(getStoreState().selectedKeyPath).toBe('contract.entry-0-value')
     })
 
-    it('setActiveContractId clears previous selected path and snapshots for prior contract', () => {
+    it('setActiveContractId clears selection while retaining prior snapshots', () => {
       const { addSnapshot, setSelectedKeyPath, setActiveContractId } =
         useLensStore.getState()
 
-      addSnapshot('old-contract', {
-        a: {
-          key: 'a',
-          contractId: 'old-contract',
-          type: 'ContractData',
-          value: { ok: true },
-          lastModifiedLedger: 1,
+      addSnapshot(
+        'old-contract',
+        {
+          a: {
+            key: 'a',
+            contractId: 'old-contract',
+            type: 'ContractData',
+            value: { ok: true },
+            lastModifiedLedger: 1,
+          },
         },
-      })
+        0,
+      )
       setSelectedKeyPath('contract.entry-0-value')
       setActiveContractId('new-contract')
 
       expect(getStoreState().selectedKeyPath).toBeNull()
-      expect(getStoreState().snapshots['old-contract']).toBeUndefined()
+      expect(
+        getStoreState().snapshots.futurenet?.['old-contract'],
+      ).toHaveLength(1)
       expect(getStoreState().activeContractId).toBe('new-contract')
     })
 

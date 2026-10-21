@@ -1,5 +1,6 @@
 import * as Comlink from 'comlink'
 import { xdr } from '@stellar/stellar-sdk'
+import { limitDecoderErrorDetail } from '../types/decoder-worker'
 import { normalizeScAddress, normalizeScVal } from './decoder/normalizeScVal'
 import { ScValType, normalizeNode } from './decoder/normalizeNode'
 import type {
@@ -47,12 +48,16 @@ export const decoderWorkerApi: DecoderWorkerApi = {
 
       if (error instanceof Error) {
         errorDetails.stack = error.stack
-        errorDetails.name = error.name
+          ? limitDecoderErrorDetail(error.stack)
+          : undefined
+        errorDetails.name = limitDecoderErrorDetail(error.name)
       }
 
       const workerError: DecoderWorkerError = {
         code: 'NORMALIZE_FAILED',
-        message: `Failed to normalize ScVal: ${errorMessage}`,
+        message: limitDecoderErrorDetail(
+          `Failed to normalize ScVal: ${errorMessage}`,
+        ),
         details: errorDetails,
       }
 
@@ -93,12 +98,9 @@ export const decoderWorkerApi: DecoderWorkerApi = {
       }
 
       // Perform full node normalization with optional depth limiting
-      const normalizedNode = normalizeNode(
-        plainScVal,
-        undefined,
-        undefined,
-        { maxDepth },
-      )
+      const normalizedNode = normalizeNode(plainScVal, undefined, undefined, {
+        maxDepth,
+      })
 
       return Promise.resolve(normalizedNode)
     } catch (error) {
@@ -108,12 +110,16 @@ export const decoderWorkerApi: DecoderWorkerApi = {
 
       if (error instanceof Error) {
         errorDetails.stack = error.stack
-        errorDetails.name = error.name
+          ? limitDecoderErrorDetail(error.stack)
+          : undefined
+        errorDetails.name = limitDecoderErrorDetail(error.name)
       }
 
       const workerError: DecoderWorkerError = {
         code: 'DECODE_FAILED',
-        message: `Failed to decode ScVal XDR: ${errorMessage}`,
+        message: limitDecoderErrorDetail(
+          `Failed to decode ScVal XDR: ${errorMessage}`,
+        ),
         details: errorDetails,
       }
 

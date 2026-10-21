@@ -1,3 +1,4 @@
+import { normalizeNetworkScopeId } from './networkScope'
 import type { LensStore } from './types'
 
 // Network selectors
@@ -17,7 +18,10 @@ export const selectLedgerEntry = (key: string) => (state: LensStore) =>
 // Cache has a bounded size to prevent unbounded memory growth across sessions.
 const _ledgerEntriesByContractCache: Map<
   string,
-  { ledgerDataRef: LensStore['ledgerData'] | null; result: Array<LensStore['ledgerData'][string]> }
+  {
+    ledgerDataRef: LensStore['ledgerData'] | null
+    result: Array<LensStore['ledgerData'][string]>
+  }
 > = new Map()
 
 const MAX_LEDGER_ENTRIES_CACHE_SIZE = 50
@@ -39,7 +43,9 @@ function evictOldestCacheEntry(): void {
  * Clears stale cache entries when ledgerData changes.
  * Entries are considered stale when the cached ledgerDataRef no longer matches the current ledgerData.
  */
-function clearStaleCacheEntries(currentLedgerData: LensStore['ledgerData']): void {
+function clearStaleCacheEntries(
+  currentLedgerData: LensStore['ledgerData'],
+): void {
   const staleKeys: Array<string> = []
   for (const [key, cached] of _ledgerEntriesByContractCache.entries()) {
     if (cached.ledgerDataRef !== currentLedgerData) {
@@ -51,39 +57,42 @@ function clearStaleCacheEntries(currentLedgerData: LensStore['ledgerData']): voi
   }
 }
 
-export const selectLedgerEntriesByContract = (contractId: string) => (
-  state: LensStore,
-) => {
-  const ledgerData = state.ledgerData
-  const cached = _ledgerEntriesByContractCache.get(contractId)
+export const selectLedgerEntriesByContract =
+  (contractId: string) => (state: LensStore) => {
+    const ledgerData = state.ledgerData
+    const cached = _ledgerEntriesByContractCache.get(contractId)
 
-  // Clear stale entries before checking cache
-  clearStaleCacheEntries(ledgerData)
+    // Clear stale entries before checking cache
+    clearStaleCacheEntries(ledgerData)
 
-  if (cached && cached.ledgerDataRef === ledgerData) {
-    return cached.result
+    if (cached && cached.ledgerDataRef === ledgerData) {
+      return cached.result
+    }
+
+    const result = Object.values(ledgerData).filter(
+      (e) => e.contractId === contractId,
+    )
+
+    _ledgerEntriesByContractCache.set(contractId, {
+      ledgerDataRef: ledgerData,
+      result,
+    })
+
+    // Evict oldest entry if cache exceeds max size
+    evictOldestCacheEntry()
+
+    return result
   }
-
-  const result = Object.values(ledgerData).filter(
-    (e) => e.contractId === contractId,
-  )
-
-  _ledgerEntriesByContractCache.set(contractId, {
-    ledgerDataRef: ledgerData,
-    result,
-  })
-
-  // Evict oldest entry if cache exceeds max size
-  evictOldestCacheEntry()
-
-  return result
-}
 export const selectWatchlistForContract =
   (contractId: string) => (state: LensStore) =>
-    state.watchlist[contractId] ?? []
+    state.watchlist[normalizeNetworkScopeId(state.networkConfig.networkId)]?.[
+      contractId
+    ] ?? []
 export const selectSnapshotsForContract =
   (contractId: string) => (state: LensStore) =>
-    state.snapshots[contractId] ?? []
+    state.snapshots[normalizeNetworkScopeId(state.networkConfig.networkId)]?.[
+      contractId
+    ] ?? []
 export const selectLedgerEntryCount = (state: LensStore) =>
   Object.keys(state.ledgerData).length
 export const selectHasLedgerData = (state: LensStore) =>

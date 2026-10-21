@@ -1,6 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TreeRow } from '../../components/explorer/TreeRow'
+import { useLensStore } from '../../store/lensStore'
+import { BigIntDisplayMode, ByteDisplayMode } from '../../store/types'
 import type { FlatTreeRow } from '../../lib/tree/flatTreeRow'
 import type { Node } from '../../types/node'
 
@@ -28,6 +30,10 @@ function makeRow(partial: Partial<FlatTreeRow> = {}): FlatTreeRow {
 }
 
 describe('TreeRow', () => {
+  afterEach(() => {
+    useLensStore.getState().resetPreferences()
+  })
+
   it('renders indentation spacer for leaf nodes', () => {
     render(
       <TreeRow
@@ -39,6 +45,11 @@ describe('TreeRow', () => {
     )
 
     expect(screen.queryByRole('button', { name: /toggle/i })).toBeNull()
+    expect(
+      screen
+        .getByRole('treeitem', { name: 'Open entry[0].value' })
+        .getAttribute('aria-level'),
+    ).toBe('3')
     expect(screen.getByText('hello')).toBeTruthy()
     expect(screen.getByText('string')).toBeTruthy()
   })
@@ -96,7 +107,7 @@ describe('TreeRow', () => {
       />,
     )
 
-    const expandableRow = screen.getByRole('button', {
+    const expandableRow = screen.getByRole('treeitem', {
       name: 'Open entry[0].value',
     })
     expect(expandableRow.getAttribute('aria-expanded')).toBe('false')
@@ -116,7 +127,7 @@ describe('TreeRow', () => {
     )
     expect(
       screen
-        .getByRole('button', { name: 'Open entry[0].value' })
+        .getByRole('treeitem', { name: 'Open entry[0].value' })
         .getAttribute('aria-expanded'),
     ).toBeNull()
   })
@@ -135,7 +146,9 @@ describe('TreeRow', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open entry[0].value' }))
+    fireEvent.click(
+      screen.getByRole('treeitem', { name: 'Open entry[0].value' }),
+    )
     expect(onActivate).toHaveBeenCalledWith(row)
   })
 
@@ -153,9 +166,11 @@ describe('TreeRow', () => {
       />,
     )
 
-    const button = screen.getByRole('button', { name: 'Open entry[0].value' })
-    fireEvent.keyDown(button, { key: 'Enter' })
-    fireEvent.keyDown(button, { key: ' ' })
+    const treeitem = screen.getByRole('treeitem', {
+      name: 'Open entry[0].value',
+    })
+    fireEvent.keyDown(treeitem, { key: 'Enter' })
+    fireEvent.keyDown(treeitem, { key: ' ' })
 
     expect(onActivate).toHaveBeenCalledTimes(2)
     expect(onActivate).toHaveBeenCalledWith(row)
@@ -175,9 +190,11 @@ describe('TreeRow', () => {
       />,
     )
 
-    const button = screen.getByRole('button', { name: 'Open entry[0].value' })
-    fireEvent.keyDown(button, { key: 'ArrowDown' })
-    fireEvent.keyDown(button, { key: 'ArrowUp' })
+    const treeitem = screen.getByRole('treeitem', {
+      name: 'Open entry[0].value',
+    })
+    fireEvent.keyDown(treeitem, { key: 'ArrowDown' })
+    fireEvent.keyDown(treeitem, { key: 'ArrowUp' })
 
     expect(onKeyNavigate).toHaveBeenNthCalledWith(1, 'down')
     expect(onKeyNavigate).toHaveBeenNthCalledWith(2, 'up')
@@ -221,5 +238,87 @@ describe('TreeRow', () => {
 
     expect(screen.getByText('cycle')).toBeTruthy()
     expect(screen.getByText('cycle detected at depth=3')).toBeTruthy()
+  })
+
+  it('formats byte previews using the saved preference', () => {
+    act(() => {
+      useLensStore.getState().setByteDisplayMode(ByteDisplayMode.UTF8)
+    })
+    const row = makeRow({
+      node: {
+        kind: 'primitive',
+        path: [],
+        scType: 'bytes',
+        value: [65, 66],
+        raw: { switch: 'ScvBytes' },
+      },
+    })
+
+    render(
+      <TreeRow
+        row={row}
+        rowHeight={40}
+        isExpanded={false}
+        isSelected={false}
+      />,
+    )
+
+    expect(screen.getByText('AB')).toBeTruthy()
+  })
+
+  it('formats large integer previews using the saved preference', () => {
+    act(() => {
+      useLensStore.getState().setBigIntDisplayMode(BigIntDisplayMode.HEX)
+    })
+    const row = makeRow({
+      node: {
+        kind: 'primitive',
+        path: [],
+        scType: 'u64',
+        value: '255',
+        raw: { switch: 'ScvU64' },
+      },
+    })
+
+    render(
+      <TreeRow
+        row={row}
+        rowHeight={40}
+        isExpanded={false}
+        isSelected={false}
+      />,
+    )
+
+    expect(screen.getByText('0xff')).toBeTruthy()
+  })
+
+  it('reports collection limits without counting the truncation marker', () => {
+    const row = makeRow({
+      kind: 'vec',
+      node: {
+        kind: 'vec',
+        path: [],
+        items: [
+          primitiveNode,
+          primitiveNode,
+          primitiveNode,
+          { kind: 'truncated', path: [], depth: 1 },
+        ],
+        childLimit: 3,
+        omittedChildren: 2,
+        raw: { switch: 'ScvVec' },
+      },
+    })
+
+    render(
+      <TreeRow
+        row={row}
+        rowHeight={40}
+        isExpanded={false}
+        isSelected={false}
+      />,
+    )
+
+    expect(screen.getByText('3 items (limit 3, 2 omitted)')).toBeTruthy()
   })
 })

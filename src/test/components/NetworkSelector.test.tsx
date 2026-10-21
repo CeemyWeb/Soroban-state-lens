@@ -1,7 +1,15 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import NetworkSelector from '../../components/global/NetworkSelector'
 import * as connectionModule from '../../lib/network/testConnection'
+import * as latestLedgerModule from '../../lib/network/getLatestLedger'
 import { resetStore, useLensStore } from '../../store/lensStore'
 import { DEFAULT_NETWORKS } from '../../store/types'
 
@@ -9,9 +17,21 @@ vi.mock('../../lib/network/testConnection', () => ({
   testRpcConnection: vi.fn(),
 }))
 
+vi.mock('../../lib/network/getLatestLedger', () => ({
+  getLatestLedgerConnectionCheck: vi.fn(),
+}))
+
 describe('NetworkSelector Component', () => {
   beforeEach(() => {
     resetStore()
+    vi.mocked(latestLedgerModule.getLatestLedgerConnectionCheck).mockResolvedValue({
+      success: false,
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
   })
 
   it('renders with default preset network', () => {
@@ -31,6 +51,42 @@ describe('NetworkSelector Component', () => {
 
     const state = useLensStore.getState()
     expect(state.networkConfig).toEqual(DEFAULT_NETWORKS.mainnet)
+  })
+
+  it('aborts stale ledger checks when network changes', async () => {
+    type LatestLedgerResult = Awaited<
+      ReturnType<typeof latestLedgerModule.getLatestLedgerConnectionCheck>
+    >
+    const resolvers: Array<(result: LatestLedgerResult) => void> = []
+    const signals: Array<AbortSignal | undefined> = []
+    vi.mocked(latestLedgerModule.getLatestLedgerConnectionCheck).mockImplementation(
+      (_url, options) => {
+        signals.push(typeof options === 'object' ? options.signal : undefined)
+        return new Promise((resolve) => resolvers.push(resolve))
+      },
+    )
+
+    render(<NetworkSelector />)
+    await waitFor(() => expect(resolvers).toHaveLength(1))
+
+    fireEvent.click(screen.getByRole('button', { name: /select network/i }))
+    fireEvent.click(screen.getByRole('option', { name: /mainnet/i }))
+    await waitFor(() => expect(resolvers).toHaveLength(2))
+
+    expect(signals[0]?.aborted).toBe(true)
+    expect(useLensStore.getState().latestLedgerSequence).toBeNull()
+
+    await act(async () => {
+      resolvers[0]?.({ success: true, ledger: { sequence: 100 } })
+      await Promise.resolve()
+    })
+    expect(useLensStore.getState().latestLedgerSequence).toBeNull()
+
+    await act(async () => {
+      resolvers[1]?.({ success: true, ledger: { sequence: 200 } })
+      await Promise.resolve()
+    })
+    expect(useLensStore.getState().latestLedgerSequence).toBe(200)
   })
 
   it('opens custom panel and captures custom url and network passphrase on apply', () => {
@@ -262,6 +318,46 @@ describe('NetworkSelector Component', () => {
     expect(screen.queryByText('A failed')).toBeNull()
   })
 
+  it('aborts the active connection test when the URL changes', () => {
+    const testConnection = vi
+      .spyOn(connectionModule, 'testRpcConnection')
+      .mockImplementation(() => new Promise(() => undefined))
+
+    render(<NetworkSelector />)
+    fireEvent.click(screen.getByRole('button', { name: /select network/i }))
+    fireEvent.click(screen.getByRole('option', { name: /custom/i }))
+
+    const input = screen.getByLabelText('Custom RPC URL input')
+    fireEvent.change(input, { target: { value: 'https://rpc-a.example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }))
+
+    const signal = testConnection.mock.calls.at(-1)?.[1]?.signal
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal?.aborted).toBe(false)
+
+    fireEvent.change(input, { target: { value: 'https://rpc-b.example.com' } })
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('aborts the active connection test when the component unmounts', () => {
+    const testConnection = vi
+      .spyOn(connectionModule, 'testRpcConnection')
+      .mockImplementation(() => new Promise(() => undefined))
+
+    const { unmount } = render(<NetworkSelector />)
+    fireEvent.click(screen.getByRole('button', { name: /select network/i }))
+    fireEvent.click(screen.getByRole('option', { name: /custom/i }))
+    fireEvent.change(screen.getByLabelText('Custom RPC URL input'), {
+      target: { value: 'https://rpc.example.com' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }))
+
+    const signal = testConnection.mock.calls.at(-1)?.[1]?.signal
+    expect(signal?.aborted).toBe(false)
+    unmount()
+    expect(signal?.aborted).toBe(true)
+  })
+
   it('returns focus to the trigger after selecting a preset network', async () => {
     render(<NetworkSelector />)
 
@@ -286,5 +382,122 @@ describe('NetworkSelector Component', () => {
     fireEvent.click(screen.getByRole('button', { name: /cancel custom rpc/i }))
 
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it('navigates options with ArrowDown key with wrap-around', () => {
+    render(<NetworkSelector />)
+
+    const trigger = screen.getByRole('button', { name: /select network/i })
+    fireEvent.click(trigger)
+
+    const options = screen.getAllByRole('option')
+
+    // ArrowDown from trigger focuses first option
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[0])
+
+    // ArrowDown moves to next option
+    fireEvent.keyDown(options[0], { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[1])
+
+    // ArrowDown from last option wraps to first
+    fireEvent.keyDown(options[3], { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[0])
+  })
+
+  it('navigates options with ArrowUp key with wrap-around', () => {
+    render(<NetworkSelector />)
+
+    const trigger = screen.getByRole('button', { name: /select network/i })
+    fireEvent.click(trigger)
+
+    const options = screen.getAllByRole('option')
+
+    // ArrowUp from trigger focuses last option
+    fireEvent.keyDown(trigger, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(options[3])
+
+    // ArrowUp moves to previous option
+    fireEvent.keyDown(options[3], { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(options[2])
+
+    // ArrowUp from first option wraps to last
+    fireEvent.keyDown(options[0], { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(options[3])
+  })
+
+  it('navigates to first option with Home key', () => {
+    render(<NetworkSelector />)
+
+    const trigger = screen.getByRole('button', { name: /select network/i })
+    fireEvent.click(trigger)
+
+    const options = screen.getAllByRole('option')
+
+    // Navigate to last option
+    fireEvent.keyDown(trigger, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(options[3])
+
+    // Home key focuses first option
+    fireEvent.keyDown(options[3], { key: 'Home' })
+    expect(document.activeElement).toBe(options[0])
+  })
+
+  it('navigates to last option with End key', () => {
+    render(<NetworkSelector />)
+
+    const trigger = screen.getByRole('button', { name: /select network/i })
+    fireEvent.click(trigger)
+
+    const options = screen.getAllByRole('option')
+
+    // Navigate to first option
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[0])
+
+    // End key focuses last option
+    fireEvent.keyDown(options[0], { key: 'End' })
+    expect(document.activeElement).toBe(options[3])
+  })
+
+  it('selects focused option with Enter key', () => {
+    render(<NetworkSelector />)
+
+    const trigger = screen.getByRole('button', { name: /select network/i })
+    fireEvent.click(trigger)
+
+    const options = screen.getAllByRole('option')
+
+    // Navigate to mainnet
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[0])
+
+    // Select with Enter
+    fireEvent.keyDown(options[0], { key: 'Enter' })
+
+    const state = useLensStore.getState()
+    expect(state.networkConfig).toEqual(DEFAULT_NETWORKS.mainnet)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('selects focused option with Space key', () => {
+    render(<NetworkSelector />)
+
+    const trigger = screen.getByRole('button', { name: /select network/i })
+    fireEvent.click(trigger)
+
+    const options = screen.getAllByRole('option')
+
+    // Navigate to testnet
+    fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+    fireEvent.keyDown(options[0], { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[1])
+
+    // Select with Space
+    fireEvent.keyDown(options[1], { key: ' ' })
+
+    const state = useLensStore.getState()
+    expect(state.networkConfig).toEqual(DEFAULT_NETWORKS.testnet)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
   })
 })

@@ -1,7 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearActiveContractContext } from '@/routes/contracts/$contractId'
 import { getStoreState, resetStore } from '@/store/lensStore'
 import { resolveSelectedKeyPath } from '@/routes/contracts/$contractId/explorer'
+
+vi.mock('@stellar/design-system', () => ({
+  Button: () => null,
+  Card: () => null,
+  Heading: () => null,
+}))
 
 const VALID_CONTRACT_ID =
   'CC42QZWUV2R7PUN2SZZW3Y3A43UUB5L2U3B4K3O5EUT7Y4I2O2W34EWM'

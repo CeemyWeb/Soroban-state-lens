@@ -5,10 +5,16 @@ import {
   clearPersistedNetworkConfig,
   isValidNetworkConfig,
   mergeNetworkConfig,
+  sanitizeNetworkSnapshots,
+  sanitizeNetworkWatchlist,
+  sanitizeSnapshots,
   sanitizeWatchlist,
   serializeNetworkConfigForStorage,
 } from '../../store/persistence'
-import { DEFAULT_NETWORKS } from '../../store/types'
+import {
+  DEFAULT_NETWORKS,
+  DEFAULT_SNAPSHOT_RETENTION_LIMIT,
+} from '../../store/types'
 import { useLensStore } from '@/store/lensStore'
 
 // Simple localStorage mock for node environment
@@ -235,7 +241,7 @@ describe('persistence', () => {
       }
       const result = mergeNetworkConfig(persistedState, currentState)
       expect(result.networkConfig).toEqual(DEFAULT_NETWORKS.testnet)
-      expect(result.watchlist).toEqual(watchlist)
+      expect(result.watchlist).toEqual({ testnet: watchlist })
     })
 
     it('drops invalid watchlist entries on hydration without crashing', () => {
@@ -258,7 +264,9 @@ describe('persistence', () => {
       }
       const result = mergeNetworkConfig(persistedState, currentState)
       expect(result.watchlist).toEqual({
-        C1: [{ contractId: 'C1', keyPath: 'ok', timestamp: 1 }],
+        testnet: {
+          C1: [{ contractId: 'C1', keyPath: 'ok', timestamp: 1 }],
+        },
       })
     })
   })
@@ -295,6 +303,22 @@ describe('persistence', () => {
       expect(result.C1[0].keyPath).toBe('k')
     })
 
+    it('sorts hydrated pins newest first with a key-path tie break', () => {
+      const result = sanitizeWatchlist({
+        C1: [
+          { contractId: 'C1', keyPath: '/z', timestamp: 2 },
+          { contractId: 'C1', keyPath: '/b', timestamp: 3 },
+          { contractId: 'C1', keyPath: '/a', timestamp: 3 },
+        ],
+      })
+
+      expect(result.C1.map(({ keyPath }) => keyPath)).toEqual([
+        '/a',
+        '/b',
+        '/z',
+      ])
+    })
+
     it('drops future-dated items while preserving present and past items', () => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date('2026-07-27T12:00:00.000Z'))
@@ -306,13 +330,13 @@ describe('persistence', () => {
           C1: [
             {
               contractId: 'C1',
-              keyPath: 'past',
-              timestamp: now - 1,
+              keyPath: 'present',
+              timestamp: now,
             },
             {
               contractId: 'C1',
-              keyPath: 'present',
-              timestamp: now,
+              keyPath: 'past',
+              timestamp: now - 1,
             },
             {
               contractId: 'C1',
@@ -326,13 +350,13 @@ describe('persistence', () => {
           C1: [
             {
               contractId: 'C1',
-              keyPath: 'past',
-              timestamp: now - 1,
+              keyPath: 'present',
+              timestamp: now,
             },
             {
               contractId: 'C1',
-              keyPath: 'present',
-              timestamp: now,
+              keyPath: 'past',
+              timestamp: now - 1,
             },
           ],
         })
@@ -392,9 +416,12 @@ describe('persistence', () => {
 
         useLensStore.getState().addToWatchlist('C1', '/some/key')
 
-        const result = sanitizeWatchlist(useLensStore.getState().watchlist)
+        const result = sanitizeNetworkWatchlist(
+          useLensStore.getState().watchlist,
+          useLensStore.getState().networkConfig.networkId,
+        )
 
-        expect(result.C1).toEqual([
+        expect(result.futurenet?.C1).toEqual([
           {
             contractId: 'C1',
             keyPath: '/some/key',
@@ -410,6 +437,97 @@ describe('persistence', () => {
     it('omits contracts whose items all failed validation', () => {
       const result = sanitizeWatchlist({ C1: [{ bad: true }] })
       expect(result).toEqual({})
+    })
+
+    it('keeps valid watchlist buckets separate for each network', () => {
+      const result = sanitizeNetworkWatchlist(
+        {
+          TESTNET: {
+            C1: [{ contractId: 'C1', keyPath: 'testnet', timestamp: 1 }],
+          },
+          FUTURENET: {
+            C1: [{ contractId: 'C1', keyPath: 'futurenet', timestamp: 2 }],
+          },
+        },
+        'mainnet',
+      )
+
+      expect(result).toEqual({
+        testnet: {
+          C1: [{ contractId: 'C1', keyPath: 'testnet', timestamp: 1 }],
+        },
+        futurenet: {
+          C1: [{ contractId: 'C1', keyPath: 'futurenet', timestamp: 2 }],
+        },
+      })
+    })
+
+    it('keeps valid snapshot buckets separate for each network', () => {
+      const snapshot = (contractId: string, id: string, ledgerSequence: number) => ({
+        id,
+        contractId,
+        timestamp: 1,
+        ledgerSequence,
+        ledgerData: {},
+      })
+      const result = sanitizeNetworkSnapshots(
+        {
+          TESTNET: { C1: [snapshot('C1', 'testnet', 1)] },
+          FUTURENET: { C1: [snapshot('C1', 'futurenet', 2)] },
+        },
+        'mainnet',
+      )
+
+      expect(result).toEqual({
+        testnet: { C1: [snapshot('C1', 'testnet', 1)] },
+        futurenet: { C1: [snapshot('C1', 'futurenet', 2)] },
+      })
+    })
+  })
+
+  describe('sanitizeSnapshots', () => {
+    it('drops malformed snapshots, sanitizes entries, and retains only the newest bounded set', () => {
+      const items = Array.from(
+        { length: DEFAULT_SNAPSHOT_RETENTION_LIMIT + 3 },
+        (_, index) => ({
+          id: `snapshot-${index}`,
+          contractId: 'C1',
+          timestamp: index + 1,
+          ledgerSequence: index,
+          ledgerData: {
+            key1: {
+              key: 'key1',
+              contractId: 'C1',
+              type: 'ContractData',
+              value: { count: index },
+              lastModifiedLedger: index,
+              decodeErrorReason: 'Decoder fallback used',
+            },
+            invalid: {
+              key: 'wrong-key',
+              contractId: 'C1',
+              type: 'ContractData',
+              value: null,
+              lastModifiedLedger: index,
+            },
+          },
+        }),
+      )
+
+      const sanitized = sanitizeSnapshots({
+        C1: [
+          ...items,
+          { id: 'future', contractId: 'C1', timestamp: Date.now() + 1000 },
+          { id: 'bad-ledger', contractId: 'C1', timestamp: 1, ledgerData: [] },
+        ],
+      })
+
+      expect(sanitized.C1).toHaveLength(DEFAULT_SNAPSHOT_RETENTION_LIMIT)
+      expect(sanitized.C1[0].id).toBe('snapshot-3')
+      expect(Object.keys(sanitized.C1[0].ledgerData)).toEqual(['key1'])
+      expect(sanitized.C1[0].ledgerData.key1.decodeErrorReason).toBe(
+        'Decoder fallback used',
+      )
     })
   })
 

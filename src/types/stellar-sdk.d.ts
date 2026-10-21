@@ -37,6 +37,32 @@ declare module '@stellar/stellar-sdk' {
     toString(): string
   }
 
+  export class Account {
+    constructor(accountId: string, sequence: string)
+  }
+
+  export const BASE_FEE: string
+  export function nativeToScVal(value: unknown): any
+  export const Operation: {
+    invokeContractFunction: (options: {
+      contract: string
+      function: string
+      args: Array<any>
+    }) => any
+  }
+  export class TransactionBuilder {
+    constructor(
+      source: Account,
+      options: { fee: string; networkPassphrase: string },
+    )
+    addOperation: (operation: any) => this
+    setTimeout: (timeout: number) => this
+    build: () => { toXDR: () => string }
+  }
+  export const StrKey: {
+    encodeContract: (publicKey: Uint8Array) => string
+  }
+
   export namespace rpc {
     export class Server {
       constructor(url: string)

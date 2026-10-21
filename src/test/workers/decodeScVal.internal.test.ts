@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { xdr } from '@stellar/stellar-sdk'
 import { decoderWorkerApi } from '../../workers/decoder.worker'
 import { isDecoderWorkerError } from '../../types/decoder-worker'
+import { MAX_CHILDREN_DEFAULT } from '../../workers/decoder/normalizeNode'
 
 describe('decoderWorkerApi.decodeScVal', () => {
   it('should decode a boolean ScVal', async () => {
@@ -36,6 +37,23 @@ describe('decoderWorkerApi.decodeScVal', () => {
       expect(result.scType).toBe('u32')
       expect(result.value).toBe(42)
     }
+  })
+
+  it('should decode byte values for preference-aware previews', async () => {
+    const scVal = xdr.ScVal.scvBytes(Buffer.from([72, 105]))
+    const result = await decoderWorkerApi.decodeScVal({
+      xdr: scVal.toXDR('base64'),
+    })
+
+    if (isDecoderWorkerError(result)) {
+      throw new Error(`Expected success, got error: ${result.message}`)
+    }
+
+    expect(result).toMatchObject({
+      kind: 'primitive',
+      scType: 'bytes',
+      value: [72, 105],
+    })
   })
 
   it('should decode a nested vec ScVal', async () => {
@@ -161,5 +179,50 @@ describe('decoderWorkerApi.decodeScVal', () => {
     expect(result.items[1].kind).toBe('truncated')
     expect(result.items[0].path).toEqual([{ type: 'index', index: 0 }])
     expect(result.items[1].path).toEqual([{ type: 'index', index: 1 }])
+  })
+
+  it('limits oversized vectors and reports omitted children', async () => {
+    const scVal = xdr.ScVal.scvVec(
+      Array.from({ length: MAX_CHILDREN_DEFAULT + 1 }, (_, index) =>
+        xdr.ScVal.scvU32(index),
+      ),
+    )
+    const result = await decoderWorkerApi.decodeScVal({
+      xdr: scVal.toXDR('base64'),
+    })
+
+    if (isDecoderWorkerError(result) || result.kind !== 'vec') {
+      throw new Error('Expected a decoded vector')
+    }
+
+    expect(result.items).toHaveLength(MAX_CHILDREN_DEFAULT + 1)
+    expect(result.childLimit).toBe(MAX_CHILDREN_DEFAULT)
+    expect(result.omittedChildren).toBe(1)
+    expect(result.items.at(-1)?.kind).toBe('truncated')
+  })
+
+  it('limits oversized maps and reports omitted entries', async () => {
+    const scVal = xdr.ScVal.scvMap(
+      Array.from(
+        { length: MAX_CHILDREN_DEFAULT + 1 },
+        (_, index) =>
+          new xdr.ScMapEntry({
+            key: xdr.ScVal.scvU32(index),
+            val: xdr.ScVal.scvU32(index),
+          }),
+      ),
+    )
+    const result = await decoderWorkerApi.decodeScVal({
+      xdr: scVal.toXDR('base64'),
+    })
+
+    if (isDecoderWorkerError(result) || result.kind !== 'map') {
+      throw new Error('Expected a decoded map')
+    }
+
+    expect(result.entries).toHaveLength(MAX_CHILDREN_DEFAULT + 1)
+    expect(result.childLimit).toBe(MAX_CHILDREN_DEFAULT)
+    expect(result.omittedChildren).toBe(1)
+    expect(result.entries.at(-1)?.key.kind).toBe('truncated')
   })
 })

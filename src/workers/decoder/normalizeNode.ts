@@ -384,6 +384,7 @@ function normalizeMaxChildren(value: unknown): number | undefined {
 
 /** Sensible default for maximum recursion depth in node normalization. */
 export const MAX_DEPTH_DEFAULT = 32
+export const MAX_CHILDREN_DEFAULT = 1024
 
 /**
  * Normalizes an ScVal to a fully-typed Node with path and raw metadata.
@@ -634,6 +635,23 @@ export function normalizeNode(
       } satisfies PrimitiveNode
     }
 
+    case ScValType.SCV_BYTES: {
+      if (
+        ArrayBuffer.isView(normalizedScVal.value) &&
+        Object.prototype.toString.call(normalizedScVal.value) ===
+          '[object Uint8Array]'
+      ) {
+        return {
+          kind: 'primitive',
+          path,
+          scType: 'bytes',
+          value: Array.from(normalizedScVal.value as Uint8Array),
+          raw: toRaw(scVal),
+        } satisfies PrimitiveNode
+      }
+      return createUnsupportedNode(path, ScValType.SCV_BYTES, scVal)
+    }
+
     case ScValType.SCV_SYMBOL: {
       return {
         kind: 'primitive',
@@ -691,14 +709,12 @@ export function normalizeNode(
         } satisfies VecNode
       }
 
-      const maxChildren = normalizeMaxChildren(options?.maxChildren)
-      const childCount =
-        maxChildren === undefined
-          ? normalizedScVal.value.length
-          : Math.min(normalizedScVal.value.length, maxChildren)
+      const maxChildren =
+        normalizeMaxChildren(options?.maxChildren) ?? MAX_CHILDREN_DEFAULT
+      const childCount = Math.min(normalizedScVal.value.length, maxChildren)
       const isTruncated = childCount < normalizedScVal.value.length
 
-      // Pre-allocate the bounded result array.
+      // The configured limit bounds decoded values; a marker reports omitted values.
       const items: Array<Node> = new Array(childCount + (isTruncated ? 1 : 0))
 
       // Use a bounded loop with per-item error handling.
@@ -733,19 +749,26 @@ export function normalizeNode(
         kind: 'vec',
         path,
         items,
+        ...(isTruncated
+          ? {
+              childLimit: maxChildren,
+              omittedChildren: normalizedScVal.value.length - childCount,
+            }
+          : {}),
         raw: toRaw(scVal),
       } satisfies VecNode
     }
 
     case ScValType.SCV_MAP: {
       const entries: Array<{ key: Node; value: Node }> = []
+      const maxChildren =
+        normalizeMaxChildren(options?.maxChildren) ?? MAX_CHILDREN_DEFAULT
+      const sourceLength = Array.isArray(normalizedScVal.value)
+        ? normalizedScVal.value.length
+        : 0
+      const childCount = Math.min(sourceLength, maxChildren)
+      const isTruncated = childCount < sourceLength
       if (Array.isArray(normalizedScVal.value)) {
-        const maxChildren = normalizeMaxChildren(options?.maxChildren)
-        const childCount =
-          maxChildren === undefined
-            ? normalizedScVal.value.length
-            : Math.min(normalizedScVal.value.length, maxChildren)
-
         for (let index = 0; index < childCount; index += 1) {
           const entry = normalizedScVal.value[index]
           // js-xdr exposes struct fields via accessor methods (e.g.
@@ -774,7 +797,7 @@ export function normalizeNode(
           entries.push({ key: keyNode, value: valueNode })
         }
 
-        if (childCount < normalizedScVal.value.length) {
+        if (isTruncated) {
           const truncation = createTruncatedNode(path, currentDepth + 1)
           entries.push({ key: truncation, value: truncation })
         }
@@ -783,6 +806,12 @@ export function normalizeNode(
         kind: 'map',
         path,
         entries,
+        ...(isTruncated
+          ? {
+              childLimit: maxChildren,
+              omittedChildren: sourceLength - childCount,
+            }
+          : {}),
         raw: toRaw(scVal),
       } satisfies MapNode
     }

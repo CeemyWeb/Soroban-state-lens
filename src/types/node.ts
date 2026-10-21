@@ -64,6 +64,7 @@ export type PrimitiveKind =
   | 'i128'
   | 'u256'
   | 'i256'
+  | 'bytes'
   | 'string'
   | 'symbol'
   | 'void'
@@ -77,7 +78,7 @@ export interface PrimitiveNode {
   kind: 'primitive'
   path: Path
   scType: PrimitiveKind
-  value: boolean | number | string | null
+  value: boolean | number | string | Array<number> | null
   raw: RawScVal
 }
 
@@ -92,6 +93,8 @@ export interface VecNode {
   kind: 'vec'
   path: Path
   items: Array<Node>
+  childLimit?: number
+  omittedChildren?: number
   raw: RawScVal
 }
 
@@ -110,6 +113,8 @@ export interface MapNode {
   kind: 'map'
   path: Path
   entries: Array<MapEntryNode>
+  childLimit?: number
+  omittedChildren?: number
   raw: RawScVal
 }
 

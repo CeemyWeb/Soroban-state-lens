@@ -98,6 +98,28 @@ describe('Sidebar History Panel', () => {
     expect(screen.getByText('Diff Summary')).toBeTruthy()
   })
 
+  it('captures with Ctrl or Command+Shift+S but ignores editable controls', () => {
+    const state = useLensStore.getState()
+    state.setActiveContractId('c1')
+    state.upsertLedgerEntries([makeEntry('key1', 'c1', 'value')])
+    render(
+      <>
+        <input aria-label="Editable field" />
+        <Sidebar open={false} onClose={vi.fn()} activeNavItem="watchlist" />
+      </>,
+    )
+
+    fireEvent.keyDown(screen.getByLabelText('Editable field'), {
+      key: 's',
+      ctrlKey: true,
+      shiftKey: true,
+    })
+    expect(useLensStore.getState().getSnapshots('c1')).toHaveLength(0)
+
+    fireEvent.keyDown(document, { key: 's', metaKey: true, shiftKey: true })
+    expect(useLensStore.getState().getSnapshots('c1')).toHaveLength(1)
+  })
+
   it('displays counts for created, deleted, modified, and unchanged entries', () => {
     const state = useLensStore.getState()
     state.setActiveContractId('c1')
@@ -117,8 +139,8 @@ describe('Sidebar History Panel', () => {
     }
 
     // Programmatically add snapshots
-    state.addSnapshot('c1', snap1, 'Snapshot #1')
-    state.addSnapshot('c1', snap2, 'Snapshot #2')
+    state.addSnapshot('c1', snap1, 12345, 'Snapshot #1')
+    state.addSnapshot('c1', snap2, 12346, 'Snapshot #2')
 
     render(<Sidebar open={true} onClose={vi.fn()} activeNavItem="history" />)
 
@@ -147,11 +169,12 @@ describe('Sidebar History Panel', () => {
   it('updates the diff summary when an older snapshot pair is selected', () => {
     const state = useLensStore.getState()
     state.setActiveContractId('c1')
-    state.addSnapshot('c1', { key: makeEntry('key', 'c1', 'same') }, 'Older')
-    state.addSnapshot('c1', { key: makeEntry('key', 'c1', 'same') }, 'Middle')
+    state.addSnapshot('c1', { key: makeEntry('key', 'c1', 'same') }, 1, 'Older')
+    state.addSnapshot('c1', { key: makeEntry('key', 'c1', 'same') }, 2, 'Middle')
     state.addSnapshot(
       'c1',
       { key: makeEntry('key', 'c1', 'changed') },
+      3,
       'Latest',
     )
 

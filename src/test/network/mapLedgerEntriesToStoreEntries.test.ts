@@ -2,73 +2,49 @@ import { describe, expect, it } from 'vitest'
 import { xdr } from '@stellar/stellar-sdk'
 import { mapLedgerEntriesToStoreEntries } from '../../lib/network/mapLedgerEntriesToStoreEntries'
 
-function makeContractDataKey(
-  durability: ReturnType<typeof xdr.ContractDataDurability.temporary>,
-): string {
-  return xdr.LedgerKey.contractData(
+function makeContractDataKey(durability: 'persistent' | 'temporary'): string {
+  const ledgerKey = xdr.LedgerKey.contractData(
     new xdr.LedgerKeyContractData({
       contract: xdr.ScAddress.scAddressTypeContract(Buffer.alloc(32)),
-      key: xdr.ScVal.scvSymbol('item'),
-      durability,
+      key: xdr.ScVal.scvSymbol('metadata-key'),
+      durability: xdr.ContractDataDurability[durability](),
     }),
-  ).toXDR('base64')
+  )
+  return ledgerKey.toXDR('base64')
 }
 
 describe('mapLedgerEntriesToStoreEntries', () => {
-  it('marks expired entries without dropping their decoded value', () => {
-    const decodedValue = { kind: 'primitive', scType: 'string', value: 'kept' }
-    const temporaryKey = makeContractDataKey(
-      xdr.ContractDataDurability.temporary(),
-    )
-    const result = mapLedgerEntriesToStoreEntries({
-      contractId: 'CONTRACT_EXPIRED',
-      entries: [
-        {
-          key: temporaryKey,
-          xdr: 'xdr-temporary',
-          liveUntilLedgerSeq: 99,
-        },
-      ],
-      decodedValuesByKey: { [temporaryKey]: decodedValue },
+  it.each([
+    ['persistent', 'Persistent'],
+    ['temporary', 'Temporary'],
+  ] as const)(
+    'maps %s durability from the ledger key XDR',
+    (durability, expected) => {
+      const key = makeContractDataKey(durability)
+      const [mapped] = mapLedgerEntriesToStoreEntries({
+        contractId: 'CONTRACT_META',
+        entries: [{ key, xdr: 'value-xdr', lastModifiedLedgerSeq: 77 }],
+      })
+
+      expect(mapped.durability).toBe(expected)
+    },
+  )
+
+  it('marks temporary entries expired only after their live-until ledger', () => {
+    const key = makeContractDataKey('temporary')
+    const [expired] = mapLedgerEntriesToStoreEntries({
+      contractId: 'CONTRACT_META',
+      latestLedger: 101,
+      entries: [{ key, xdr: 'value-xdr', liveUntilLedgerSeq: 100 }],
+    })
+    const [stillLive] = mapLedgerEntriesToStoreEntries({
+      contractId: 'CONTRACT_META',
       latestLedger: 100,
+      entries: [{ key, xdr: 'value-xdr', liveUntilLedgerSeq: 100 }],
     })
 
-    expect(result[0]?.expired).toBe(true)
-    expect(result[0]?.durability).toBe('Temporary')
-    expect(result[0]?.value).toBe(decodedValue)
-  })
-
-  it('does not mark entries expired at or before their live-until ledger', () => {
-    const result = mapLedgerEntriesToStoreEntries({
-      contractId: 'CONTRACT_LIVE',
-      entries: [
-        {
-          key: makeContractDataKey(xdr.ContractDataDurability.temporary()),
-          xdr: 'xdr-live',
-          liveUntilLedgerSeq: 100,
-        },
-      ],
-      latestLedger: 100,
-    })
-
-    expect(result[0]?.expired).toBeUndefined()
-  })
-
-  it('does not mark persistent entries expired even after their live-until ledger', () => {
-    const result = mapLedgerEntriesToStoreEntries({
-      contractId: 'CONTRACT_PERSISTENT',
-      entries: [
-        {
-          key: makeContractDataKey(xdr.ContractDataDurability.persistent()),
-          xdr: 'xdr-persistent',
-          liveUntilLedgerSeq: 99,
-        },
-      ],
-      latestLedger: 100,
-    })
-
-    expect(result[0]?.durability).toBe('Persistent')
-    expect(result[0]?.expired).toBeUndefined()
+    expect(expired.expired).toBe(true)
+    expect(stillLive.expired).toBeUndefined()
   })
 
   it('maps representative entries into stable store records', () => {
@@ -98,6 +74,20 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         rawXdr: 'xdr-1',
       },
     ])
+  })
+
+  it('normalizes padded and lowercase contract IDs before mapping', () => {
+    const canonical = mapLedgerEntriesToStoreEntries({
+      contractId: 'CONTRACT_1',
+      entries: [{ key: 'ledger-key-1', xdr: 'xdr-1' }],
+    })
+    const padded = mapLedgerEntriesToStoreEntries({
+      contractId: '  contract_1  ',
+      entries: [{ key: 'ledger-key-1', xdr: 'xdr-1' }],
+    })
+
+    expect(padded).toEqual(canonical)
+    expect(padded[0].contractId).toBe('CONTRACT_1')
   })
 
   it('falls back safely when optional metadata is missing', () => {

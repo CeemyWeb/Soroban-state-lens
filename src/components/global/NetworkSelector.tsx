@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { testRpcConnection } from '../../lib/network/testConnection'
 import { resetConnectionTestState } from '../../lib/network/connectionTestState'
+import { getLatestLedgerConnectionCheck } from '../../lib/network/getLatestLedger'
+import { testRpcConnection } from '../../lib/network/testConnection'
 import { validateRpcUrl } from '../../lib/network/validation'
 import { useLensStore } from '../../store/lensStore'
 import { DEFAULT_NETWORKS } from '../../store/types'
@@ -34,15 +35,38 @@ export default function NetworkSelector() {
   >('idle')
   const [testError, setTestError] = useState('')
   const [isHydrated, setIsHydrated] = useState(false)
+  const [focusedOptionIndex, setFocusedOptionIndex] = useState<number>(-1)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const currentTestRequestId = useRef(0)
+  const connectionTestController = useRef<AbortController | null>(null)
 
   const networkConfig = useLensStore((state) => state.networkConfig)
   const lastCustomUrl = useLensStore((state) => state.lastCustomUrl)
   const setNetworkConfig = useLensStore((state) => state.setNetworkConfig)
   const setLastCustomUrl = useLensStore((state) => state.setLastCustomUrl)
+  const setLatestLedgerSequence = useLensStore(
+    (state) => state.setLatestLedgerSequence,
+  )
+
+  const abortCustomConnectionTest = () => {
+    currentTestRequestId.current += 1
+    connectionTestController.current?.abort()
+    connectionTestController.current = null
+    setTestStatus('idle')
+    setTestError('')
+  }
+
+  useEffect(
+    () => () => {
+      currentTestRequestId.current += 1
+      connectionTestController.current?.abort()
+      connectionTestController.current = null
+    },
+    [],
+  )
 
   // Hydration effect: initialize state from persisted storage
   useEffect(() => {
@@ -55,7 +79,11 @@ export default function NetworkSelector() {
       } else {
         setCustomRpcUrl(networkConfig.rpcUrl || '')
       }
-      setCustomNetworkPassphrase(networkConfig.networkPassphrase || '')
+      setCustomNetworkPassphrase(
+        networkConfig.networkPassphrase === 'Custom Network'
+          ? ''
+          : networkConfig.networkPassphrase || '',
+      )
       setShowCustomInput(true)
     }
   }, [
@@ -78,6 +106,47 @@ export default function NetworkSelector() {
     return () => window.clearTimeout(timeoutId)
   }, [showCustomInput])
 
+  // Reset focused option when dropdown opens/closes
+  useEffect(() => {
+    if (!isOpen) {
+      setFocusedOptionIndex(-1)
+      optionRefs.current = []
+    }
+  }, [isOpen])
+
+  // Focus the option when focusedOptionIndex changes
+  useEffect(() => {
+    if (
+      focusedOptionIndex >= 0 &&
+      focusedOptionIndex < NETWORK_OPTIONS.length
+    ) {
+      optionRefs.current[focusedOptionIndex]?.focus()
+    }
+  }, [focusedOptionIndex])
+
+  // Fetch latest ledger sequence when network config changes
+  useEffect(() => {
+    const controller = new AbortController()
+    setLatestLedgerSequence(null)
+
+    const fetchLatestLedger = async () => {
+      const result = await getLatestLedgerConnectionCheck(
+        networkConfig.rpcUrl,
+        { signal: controller.signal },
+      )
+      if (controller.signal.aborted) return
+
+      if (result.success && result.ledger) {
+        setLatestLedgerSequence(result.ledger.sequence)
+      } else {
+        setLatestLedgerSequence(null)
+      }
+    }
+
+    void fetchLatestLedger()
+    return () => controller.abort()
+  }, [networkConfig.rpcUrl, setLatestLedgerSequence])
+
   // Don't render until hydrated to prevent SSR mismatches
   if (!isHydrated) {
     return (
@@ -92,8 +161,8 @@ export default function NetworkSelector() {
     NETWORK_OPTIONS.find((opt) => opt.id === networkConfig.networkId) ||
     NETWORK_OPTIONS.find((opt) => opt.id === 'custom')!
 
-  // Initialize custom URL and passphrase when switching to custom mode
   const handleSelect = (option: NetworkInfo) => {
+    abortCustomConnectionTest()
     if (option.config) {
       // Preset network: clear any custom URL usage and close everything
       setNetworkConfig(option.config)
@@ -135,8 +204,13 @@ export default function NetworkSelector() {
   }
 
   const handleApplyCustomUrl = () => {
+    if (!customNetworkPassphrase.trim()) {
+      return
+    }
+
     const validation = validateRpcUrl(customRpcUrl)
     if (validation.isValid) {
+      abortCustomConnectionTest()
       setNetworkConfig({
         networkId: 'custom',
         rpcUrl: customRpcUrl.trim(),
@@ -157,27 +231,51 @@ export default function NetworkSelector() {
       return
     }
 
+    abortCustomConnectionTest()
     const requestId = ++currentTestRequestId.current
     const rpcUrl = customRpcUrl.trim()
+    const controller = new AbortController()
+    connectionTestController.current = controller
 
     setTestStatus('loading')
     setTestError('')
 
-    const result = await testRpcConnection(rpcUrl)
+    try {
+      const result = await testRpcConnection(rpcUrl, {
+        signal: controller.signal,
+      })
+      if (
+        requestId !== currentTestRequestId.current ||
+        controller.signal.aborted
+      ) {
+        return
+      }
 
-    if (requestId !== currentTestRequestId.current) {
-      return
-    }
-
-    if (result.success) {
-      setTestStatus('success')
-    } else {
-      setTestStatus('error')
-      setTestError(result.error || 'Connection failed')
+      if (result.success) {
+        setTestStatus('success')
+      } else {
+        setTestStatus('error')
+        setTestError(result.error || 'Connection failed')
+      }
+    } catch (error) {
+      if (
+        !controller.signal.aborted &&
+        requestId === currentTestRequestId.current
+      ) {
+        setTestStatus('error')
+        setTestError(
+          error instanceof Error ? error.message : 'Connection failed',
+        )
+      }
+    } finally {
+      if (connectionTestController.current === controller) {
+        connectionTestController.current = null
+      }
     }
   }
 
   const handleCancelCustom = () => {
+    abortCustomConnectionTest()
     // If we were never on a valid custom network, fall back to testnet
     const fallback = lastCustomUrl
       ? undefined // stay on custom with last applied URL
@@ -196,7 +294,7 @@ export default function NetworkSelector() {
   }
 
   const handleCustomUrlChange = (url: string) => {
-    currentTestRequestId.current += 1
+    abortCustomConnectionTest()
     setCustomRpcUrl(url)
     const resetState = resetConnectionTestState()
     setTestStatus(resetState.status)
@@ -233,13 +331,70 @@ export default function NetworkSelector() {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
       setIsOpen(false)
+      return
+    }
+
+    if (!isOpen) {
+      return
+    }
+
+    const optionCount = NETWORK_OPTIONS.length
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault()
+        setFocusedOptionIndex((prev) => {
+          if (prev === -1) return 0
+          return (prev + 1) % optionCount
+        })
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        setFocusedOptionIndex((prev) => {
+          if (prev === -1) return optionCount - 1
+          return (prev - 1 + optionCount) % optionCount
+        })
+        break
+      case 'Home':
+        e.preventDefault()
+        setFocusedOptionIndex(0)
+        break
+      case 'End':
+        e.preventDefault()
+        setFocusedOptionIndex(optionCount - 1)
+        break
     }
   }
 
-  const handleOptionKeyDown = (e: React.KeyboardEvent, option: NetworkInfo) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      handleSelect(option)
+  const handleOptionKeyDown = (
+    e: React.KeyboardEvent,
+    option: NetworkInfo,
+    index: number,
+  ) => {
+    const optionCount = NETWORK_OPTIONS.length
+
+    switch (e.key) {
+      case 'Enter':
+      case ' ':
+        e.preventDefault()
+        handleSelect(option)
+        break
+      case 'ArrowDown':
+        e.preventDefault()
+        setFocusedOptionIndex((index + 1) % optionCount)
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        setFocusedOptionIndex((index - 1 + optionCount) % optionCount)
+        break
+      case 'Home':
+        e.preventDefault()
+        setFocusedOptionIndex(0)
+        break
+      case 'End':
+        e.preventDefault()
+        setFocusedOptionIndex(optionCount - 1)
+        break
     }
   }
 
@@ -348,8 +503,23 @@ export default function NetworkSelector() {
                   placeholder="Test SDF Network ; September 2015"
                   className="w-full px-3 py-2 bg-background-dark border border-border-dark focus:border-primary rounded-md text-sm text-white placeholder-text-muted transition-colors focus:outline-none focus:ring-1 focus:ring-primary/20"
                   aria-label="Custom Network Passphrase input"
+                  aria-invalid={!customNetworkPassphrase.trim()}
+                  aria-describedby={
+                    !customNetworkPassphrase.trim()
+                      ? 'network-passphrase-error'
+                      : undefined
+                  }
                 />
               </div>
+
+              {!customNetworkPassphrase.trim() && (
+                <p
+                  id="network-passphrase-error"
+                  className="text-xs text-red-400"
+                >
+                  Network passphrase is required.
+                </p>
+              )}
 
               {validationError && (
                 <p
@@ -374,6 +544,16 @@ export default function NetworkSelector() {
                   </span>
                   {testError}
                 </p>
+              )}
+
+              {testStatus === 'error' && (
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  className="text-xs font-medium text-primary hover:text-primary/80 transition-colors"
+                >
+                  Retry
+                </button>
               )}
 
               {testStatus === 'success' && (
@@ -422,7 +602,11 @@ export default function NetworkSelector() {
                 <button
                   type="button"
                   onClick={handleApplyCustomUrl}
-                  disabled={!customRpcUrl.trim() || !!validationError}
+                  disabled={
+                    !customRpcUrl.trim() ||
+                    !customNetworkPassphrase.trim() ||
+                    !!validationError
+                  }
                   className="px-3 py-1.5 text-sm bg-primary text-white rounded-md hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Apply
@@ -440,14 +624,18 @@ export default function NetworkSelector() {
           role="listbox"
           aria-label="Network options"
         >
-          {NETWORK_OPTIONS.map((option) => (
+          {NETWORK_OPTIONS.map((option, index) => (
             <div key={option.id}>
               <button
                 type="button"
+                ref={(el) => {
+                  optionRefs.current[index] = el
+                  return
+                }}
                 role="option"
                 aria-selected={currentNetwork.id === option.id}
                 onClick={() => handleSelect(option)}
-                onKeyDown={(e) => handleOptionKeyDown(e, option)}
+                onKeyDown={(e) => handleOptionKeyDown(e, option, index)}
                 className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-white/5 transition-colors ${
                   currentNetwork.id === option.id
                     ? 'bg-primary/10 text-primary'

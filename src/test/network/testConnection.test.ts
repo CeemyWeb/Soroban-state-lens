@@ -1,8 +1,23 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { testRpcConnection } from '../../lib/network/testConnection'
 import * as latestLedger from '../../lib/network/getLatestLedger'
 
 describe('testRpcConnection', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('passes the optional abort signal through to the ledger check', async () => {
+    const signal = new AbortController().signal
+    const spy = vi
+      .spyOn(latestLedger, 'getLatestLedgerConnectionCheck')
+      .mockResolvedValue({ success: true, ledger: { sequence: 1 } })
+
+    await testRpcConnection('https://valid-rpc.com', { signal })
+
+    expect(spy).toHaveBeenCalledWith('https://valid-rpc.com', { signal })
+  })
+
   it('should return success true for valid response', async () => {
     const spy = vi
       .spyOn(latestLedger, 'getLatestLedgerConnectionCheck')

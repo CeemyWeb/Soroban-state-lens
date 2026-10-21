@@ -73,6 +73,8 @@ describe('Watchlist route', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
 
-    expect(useLensStore.getState().watchlist[VALID_CONTRACT_ID]).toBeUndefined()
+    expect(
+      useLensStore.getState().watchlist.futurenet?.[VALID_CONTRACT_ID],
+    ).toBeUndefined()
   })
 })

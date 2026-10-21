@@ -11,41 +11,50 @@ import { formatScBytesHex } from './formatScBytesHex'
  */
 export function formatScBytesByPreference(
   input: Uint8Array | Array<number> | string,
-  preference: ByteDisplayMode
+  preference: ByteDisplayMode,
 ): string {
-  if (preference === ByteDisplayMode.BASE64) {
-    let bytes: Uint8Array | undefined
-
-    if (typeof input === 'string') {
-      if (input.length === 0) {
-        return bytesToBase64(new Uint8Array())
-      }
+  let bytes: Uint8Array
+  if (typeof input === 'string') {
+    if (input.length === 0) {
+      bytes = new Uint8Array()
+    } else {
       try {
         const decoded = atob(input)
-        bytes = new Uint8Array(decoded.split('').map(c => c.charCodeAt(0)))
+        bytes = new Uint8Array(decoded.split('').map((c) => c.charCodeAt(0)))
       } catch {
         return formatScBytesHex(input)
       }
-    } else if (Array.isArray(input)) {
-      for (const byte of input) {
-        if (
+    }
+  } else if (Array.isArray(input)) {
+    if (
+      input.some(
+        (byte) =>
           typeof byte !== 'number' ||
           !Number.isInteger(byte) ||
           byte < 0 ||
-          byte > 255
-        ) {
-          return formatScBytesHex(input)
-        }
-      }
-      bytes = new Uint8Array(input)
-    } else if (input instanceof Uint8Array) {
-      bytes = input
-    } else {
+          byte > 255,
+      )
+    ) {
       return formatScBytesHex(input)
     }
-
-    return bytesToBase64(bytes)
+    bytes = new Uint8Array(input)
+  } else if (input instanceof Uint8Array) {
+    bytes = input
+  } else {
+    return formatScBytesHex(input)
   }
 
-  return formatScBytesHex(input)
+  switch (preference) {
+    case ByteDisplayMode.BASE64:
+      return bytesToBase64(bytes)
+    case ByteDisplayMode.UTF8:
+      try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      } catch {
+        return formatScBytesHex(input)
+      }
+    case ByteDisplayMode.HEX:
+    default:
+      return formatScBytesHex(input)
+  }
 }

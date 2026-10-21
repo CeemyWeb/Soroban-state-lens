@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { extractContractspecv0 } from '../../lib/wasm/wasmExtractor'
+import {
+  MAX_CONTRACT_SPEC_PAYLOAD_BYTES,
+  extractContractspecv0,
+} from '../../lib/wasm/wasmExtractor'
 
 /**
  * Helper to create a minimal valid WASM module
@@ -84,7 +87,11 @@ describe('wasmExtractor - extractContractspecv0', () => {
     it('should extract contractspecv0 section from valid WASM module', () => {
       const baseModule = createEmptyWasmModule()
       const payload = new TextEncoder().encode('test payload data')
-      const wasmWithSection = addCustomSection(baseModule, 'contractspecv0', payload)
+      const wasmWithSection = addCustomSection(
+        baseModule,
+        'contractspecv0',
+        payload,
+      )
 
       const result = extractContractspecv0(wasmWithSection)
 
@@ -97,7 +104,11 @@ describe('wasmExtractor - extractContractspecv0', () => {
     it('should extract empty contractspecv0 payload', () => {
       const baseModule = createEmptyWasmModule()
       const emptyPayload = new Uint8Array(0)
-      const wasmWithSection = addCustomSection(baseModule, 'contractspecv0', emptyPayload)
+      const wasmWithSection = addCustomSection(
+        baseModule,
+        'contractspecv0',
+        emptyPayload,
+      )
 
       const result = extractContractspecv0(wasmWithSection)
 
@@ -109,10 +120,18 @@ describe('wasmExtractor - extractContractspecv0', () => {
 
     it('should extract contractspecv0 from module with multiple custom sections', () => {
       let wasm = createEmptyWasmModule()
-      wasm = addCustomSection(wasm, 'other-section', new TextEncoder().encode('other'))
+      wasm = addCustomSection(
+        wasm,
+        'other-section',
+        new TextEncoder().encode('other'),
+      )
       const payload = new TextEncoder().encode('contract spec content')
       wasm = addCustomSection(wasm, 'contractspecv0', payload)
-      wasm = addCustomSection(wasm, 'another-section', new TextEncoder().encode('more data'))
+      wasm = addCustomSection(
+        wasm,
+        'another-section',
+        new TextEncoder().encode('more data'),
+      )
 
       const result = extractContractspecv0(wasm)
 
@@ -137,12 +156,44 @@ describe('wasmExtractor - extractContractspecv0', () => {
         expect(result.payload).toEqual(largePayload)
       }
     })
+
+    it('accepts a contract spec payload at the configured size limit', () => {
+      const payload = new Uint8Array(MAX_CONTRACT_SPEC_PAYLOAD_BYTES)
+      const wasm = addCustomSection(
+        createEmptyWasmModule(),
+        'contractspecv0',
+        payload,
+      )
+
+      const result = extractContractspecv0(wasm)
+
+      expect(result.ok).toBe(true)
+      if (result.ok) expect(result.payload).toHaveLength(payload.length)
+    })
+
+    it('returns a bounded failure for payloads over the configured limit', () => {
+      const payload = new Uint8Array(MAX_CONTRACT_SPEC_PAYLOAD_BYTES + 1)
+      const wasm = addCustomSection(
+        createEmptyWasmModule(),
+        'contractspecv0',
+        payload,
+      )
+
+      expect(extractContractspecv0(wasm)).toEqual({
+        ok: false,
+        reason: `contractspecv0 payload exceeds ${MAX_CONTRACT_SPEC_PAYLOAD_BYTES} bytes`,
+      })
+    })
   })
 
   describe('WASM without contractspecv0', () => {
     it('should fail gracefully when contractspecv0 section is not present', () => {
       const baseModule = createEmptyWasmModule()
-      const wasm = addCustomSection(baseModule, 'other-section', new TextEncoder().encode('data'))
+      const wasm = addCustomSection(
+        baseModule,
+        'other-section',
+        new TextEncoder().encode('data'),
+      )
 
       const result = extractContractspecv0(wasm)
 
@@ -161,6 +212,23 @@ describe('wasmExtractor - extractContractspecv0', () => {
       if (!result.ok) {
         expect(result.reason).toContain('contractspecv0 section not found')
       }
+    })
+  })
+
+  it('rejects malformed UTF-8 in a custom section name', () => {
+    const wasm = new Uint8Array([
+      ...createEmptyWasmModule(),
+      0x00, // Custom section ID
+      0x04, // Section size: name length plus three name bytes
+      0x03, // Name length
+      0x63,
+      0x75,
+      0xff,
+    ])
+
+    expect(extractContractspecv0(wasm)).toEqual({
+      ok: false,
+      reason: 'Malformed UTF-8 in custom section name',
     })
   })
 
@@ -195,8 +263,14 @@ describe('wasmExtractor - extractContractspecv0', () => {
 
     it('should reject invalid WASM magic number', () => {
       const invalidMagic = new Uint8Array([
-        0x00, 0x00, 0x00, 0x00, // Wrong magic
-        0x01, 0x00, 0x00, 0x00, // Valid version
+        0x00,
+        0x00,
+        0x00,
+        0x00, // Wrong magic
+        0x01,
+        0x00,
+        0x00,
+        0x00, // Valid version
       ])
 
       const result = extractContractspecv0(invalidMagic)
@@ -209,8 +283,14 @@ describe('wasmExtractor - extractContractspecv0', () => {
 
     it('should reject WASM with unsupported version', () => {
       const wrongVersion = new Uint8Array([
-        0x00, 0x61, 0x73, 0x6d, // Valid magic
-        0x02, 0x00, 0x00, 0x00, // Version 2 (not 1)
+        0x00,
+        0x61,
+        0x73,
+        0x6d, // Valid magic
+        0x02,
+        0x00,
+        0x00,
+        0x00, // Version 2 (not 1)
       ])
 
       const result = extractContractspecv0(wrongVersion)
@@ -244,10 +324,19 @@ describe('wasmExtractor - extractContractspecv0', () => {
     it('should handle section size exceeding module length', () => {
       // Manually construct a corrupted module with section size larger than available data
       const corrupted = new Uint8Array([
-        0x00, 0x61, 0x73, 0x6d, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
+        0x00,
+        0x61,
+        0x73,
+        0x6d, // Magic
+        0x01,
+        0x00,
+        0x00,
+        0x00, // Version
         0x00, // Custom section ID
-        0xff, 0xff, 0xff, 0xff, // Large size (LEB128 overflow)
+        0xff,
+        0xff,
+        0xff,
+        0xff, // Large size (LEB128 overflow)
       ])
 
       const result = extractContractspecv0(corrupted)
@@ -276,7 +365,11 @@ describe('wasmExtractor - extractContractspecv0', () => {
 
     it('should handle contractspecv0 as last section', () => {
       let wasm = createEmptyWasmModule()
-      wasm = addCustomSection(wasm, 'first', new TextEncoder().encode('first data'))
+      wasm = addCustomSection(
+        wasm,
+        'first',
+        new TextEncoder().encode('first data'),
+      )
       const payload = new TextEncoder().encode('last section')
       wasm = addCustomSection(wasm, 'contractspecv0', payload)
 

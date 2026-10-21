@@ -1,5 +1,9 @@
-import { createDecoderWorker } from './createDecoderWorker'
-import type { DecoderWorkerClient } from './createDecoderWorker'
+import {
+  createDecoderWorker,
+  terminateDecoderWorker,
+} from './createDecoderWorker'
+import type * as Comlink from 'comlink'
+import type { DecoderWorkerApi } from '../types/decoder-worker'
 
 /**
  * Safely creates a decoder worker by wrapping the original factory.
@@ -25,4 +29,10 @@ export function createDecoderWorkerSafe(): Promise<DecoderWorkerClient> {
       new Error(`Failed to initialize decoder worker: ${message}`),
     )
   }
+}
+
+export function terminateDecoderWorkerSafe(
+  worker: Comlink.Remote<DecoderWorkerApi>,
+): void {
+  terminateDecoderWorker(worker)
 }

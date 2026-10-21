@@ -17,7 +17,6 @@ export function normalizeRpcError(input: unknown): {
   message: string
   retryable: boolean
 } {
-  // 1. Handle JSON-RPC 2.0 error responses
   if (isJsonRpcErrorResponse(input)) {
     const { code, message } = input.error
     return {
@@ -27,21 +26,22 @@ export function normalizeRpcError(input: unknown): {
     }
   }
 
-  // 2. Handle Error objects
   if (input instanceof Error) {
-    const code = (input as any).code
-    const retryable = (input as any).retryable
+    const errorWithCode = input as Error & {
+      code?: string | number
+      retryable?: boolean
+    }
     return {
       code:
-        typeof code === 'string' || typeof code === 'number'
-          ? String(code)
+        typeof errorWithCode.code === 'string' ||
+        typeof errorWithCode.code === 'number'
+          ? String(errorWithCode.code)
           : 'UNKNOWN',
       message: input.message || 'Unknown Error',
-      retryable: typeof retryable === 'boolean' ? retryable : false,
+      retryable: errorWithCode.retryable === true,
     }
   }
 
-  // 3. Handle string inputs
   if (typeof input === 'string' && input.trim().length > 0) {
     return {
       code: 'UNKNOWN',
@@ -50,7 +50,6 @@ export function normalizeRpcError(input: unknown): {
     }
   }
 
-  // 4. Handle object with message/code (non-Error, non-JSONRPC)
   if (input !== null && typeof input === 'object') {
     const candidate = input as Record<string, unknown>
     const message =
@@ -71,7 +70,6 @@ export function normalizeRpcError(input: unknown): {
     }
   }
 
-  // 5. Fallback for empty/invalid inputs
   return {
     code: 'UNKNOWN',
     message: 'Unknown Error',

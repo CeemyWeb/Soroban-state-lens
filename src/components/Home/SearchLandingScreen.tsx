@@ -16,6 +16,7 @@ const SearchLandingScreen = () => {
 
   const networkConfig = useLensStore((state) => state.networkConfig)
   const connectionStatus = useLensStore((state) => state.connectionStatus)
+  const activeContractId = useLensStore((state) => state.activeContractId)
 
   const networkLabel =
     networkConfig.networkId.charAt(0).toUpperCase() +
@@ -125,8 +126,14 @@ const SearchLandingScreen = () => {
             </form>
             {/* <!-- Quick Actions --> */}
             <div className="flex justify-center gap-3 w-full max-w-[600px] mx-auto text-wrap">
-              <button className="flex items-center gap-2 px-4 py-2 bg-surface-dark hover:bg-[#1f262e] border border-border-dark hover:border-primary/40 rounded text-xs text-gray-300 font-mono font-medium transition-all group">
-                <span className="material-symbols-outlined text-[16px] text-gray-500 group-hover:text-primary transition-colors">
+              <button
+                type="button"
+                disabled
+                aria-disabled="true"
+                title="Wallet connection is currently unavailable"
+                className="flex items-center gap-2 px-4 py-2 bg-surface-dark border border-border-dark rounded text-xs text-gray-500 font-mono font-medium opacity-50 cursor-not-allowed"
+              >
+                <span className="material-symbols-outlined text-[16px] text-gray-500">
                   wallet
                 </span>
                 <span className="text-xs">Connect Wallet</span>
@@ -143,11 +150,18 @@ const SearchLandingScreen = () => {
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setHistoryNotice(
-                    'Load a contract to view its recent history.',
-                  )
-                }
+                onClick={() => {
+                  if (activeContractId) {
+                    navigate({
+                      to: '/contracts/$contractId/history',
+                      params: { contractId: activeContractId },
+                    })
+                  } else {
+                    setHistoryNotice(
+                      'Load a contract to view its recent history.',
+                    )
+                  }
+                }}
                 className="flex items-center gap-2 px-4 py-2 bg-surface-dark hover:bg-[#1f262e] border border-border-dark hover:border-primary/40 rounded text-xs text-gray-300 font-mono font-medium transition-all group"
               >
                 <span className="material-symbols-outlined text-[16px] text-gray-500 group-hover:text-primary transition-colors">

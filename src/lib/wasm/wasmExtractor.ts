@@ -2,6 +2,7 @@
  * WASM module utilities for extracting custom sections
  */
 
+import { parseCustomSectionName } from '../decoder/sectionValidator'
 /**
  * Result of attempting to extract a custom section from a WASM module
  */
@@ -9,6 +10,7 @@ export type ExtractSectionResult =
   | { ok: true; payload: Uint8Array }
   | { ok: false; reason: string }
 
+export const MAX_CONTRACT_SPEC_PAYLOAD_BYTES = 1024 * 1024
 /**
  * Decodes a LEB128-encoded unsigned integer from a Uint8Array
  * @param data - The byte array to read from
@@ -63,7 +65,7 @@ function decodeLeb128String(
   }
 
   const bytes = data.slice(newOffset, newOffset + length)
-  const str = new TextDecoder().decode(bytes)
+  const str = parseCustomSectionName(bytes)
   return [str, newOffset + length]
 }
 
@@ -148,7 +150,19 @@ export function extractContractspecv0(
     // Custom sections have ID 0
     if (sectionId === 0) {
       // Parse custom section: name followed by payload
-      const nameResult = decodeLeb128String(wasmBytes, offset)
+      let nameResult: [string, number] | null
+      try {
+        nameResult = decodeLeb128String(wasmBytes, offset)
+      } catch (error) {
+        return {
+          ok: false,
+          reason:
+            error instanceof Error
+              ? error.message
+              : 'Malformed UTF-8 in custom section name',
+        }
+      }
+
       if (!nameResult) {
         return {
           ok: false,
@@ -163,6 +177,13 @@ export function extractContractspecv0(
         // Return everything after the name as the payload
         const payloadStart = afterNameOffset
         const payloadEnd = offset + sectionSize
+
+        if (payloadEnd - payloadStart > MAX_CONTRACT_SPEC_PAYLOAD_BYTES) {
+          return {
+            ok: false,
+            reason: `contractspecv0 payload exceeds ${MAX_CONTRACT_SPEC_PAYLOAD_BYTES} bytes`,
+          }
+        }
 
         if (payloadStart > payloadEnd) {
           return {

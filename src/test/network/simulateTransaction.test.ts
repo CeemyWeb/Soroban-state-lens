@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  mapSimulationAuthError,
   simulateTransaction,
   simulateTransactionAdapter,
 } from '../../lib/network/simulateTransaction'
@@ -9,6 +10,44 @@ import { extractFootprintKeys } from '../../lib/network/footprint'
 vi.mock('../../lib/rpc/toRpcRequestId', () => ({
   toRpcRequestId: vi.fn(() => 1),
 }))
+
+describe('mapSimulationAuthError', () => {
+  it('returns the original message when no auth pattern matches', () => {
+    expect(mapSimulationAuthError('Some other failure')).toBe(
+      'Some other failure',
+    )
+  })
+
+  it('maps invalid auth entries to an actionable message', () => {
+    expect(mapSimulationAuthError('Invalid auth entry')).toContain(
+      'Authorization entry is invalid',
+    )
+  })
+
+  it('maps missing auth entries to an actionable message', () => {
+    expect(mapSimulationAuthError('Missing auth entry')).toContain(
+      'Authorization entry is missing',
+    )
+  })
+
+  it('maps auth failures to an actionable message', () => {
+    expect(mapSimulationAuthError('Auth failed')).toContain(
+      'Authorization failed',
+    )
+  })
+
+  it('maps invalid signatures to an actionable message', () => {
+    expect(mapSimulationAuthError('Invalid signature')).toContain(
+      'Authorization signature is invalid',
+    )
+  })
+
+  it('matches case-insensitively', () => {
+    expect(mapSimulationAuthError('INVALID AUTH')).toContain(
+      'Authorization entry is invalid',
+    )
+  })
+})
 
 describe('simulateTransactionAdapter', () => {
   it('should return success false when response is null', () => {
@@ -27,6 +66,12 @@ describe('simulateTransactionAdapter', () => {
     const result = simulateTransactionAdapter({ error: 'Transaction failed' })
     expect(result.success).toBe(false)
     expect(result.error).toBe('Transaction failed')
+  })
+
+  it('maps auth errors from the response body', () => {
+    const result = simulateTransactionAdapter({ error: 'Invalid auth entry' })
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('Authorization entry is invalid')
   })
 
   it('should return typed response shape on success', () => {
@@ -59,6 +104,33 @@ describe('simulateTransactionAdapter', () => {
     expect(result.results).toEqual([])
   })
 
+  it('normalizes simulation footprint keys deterministically', () => {
+    const result = simulateTransactionAdapter({
+      footprint: {
+        readOnly: [' z-key ', 'a-key', 'z-key', '  '],
+        readWrite: [' write ', '', 'write'],
+      },
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      footprint: {
+        readOnly: ['a-key', 'z-key'],
+        readWrite: ['write'],
+      },
+    })
+  })
+
+  it.each([-1, 1.5, NaN, Infinity, -Infinity])(
+    'rejects invalid latest ledger metadata: %s',
+    (latestLedger) => {
+      expect(simulateTransactionAdapter({ latestLedger })).toEqual({
+        success: false,
+        error: 'Invalid latest ledger value',
+      })
+    },
+  )
+
   it('filters malformed result records while keeping valid siblings', () => {
     const result = simulateTransactionAdapter({
       results: [
@@ -69,7 +141,7 @@ describe('simulateTransactionAdapter', () => {
         ['not', 'a', 'record'],
         { unexpected: true },
         { auth: [{ credentials: 'valid' }] },
-      ] as unknown as Array<{ auth?: Array<unknown>; xdr?: string }>,
+      ],
     })
 
     expect(result.results).toEqual([
@@ -87,19 +159,12 @@ describe('simulateTransactionAdapter', () => {
     expect(result.results).toEqual([])
   })
 
-  it.each([
-    { latestLedger: 1.5, description: 'fractional' },
-    { latestLedger: -1, description: 'negative' },
-    { latestLedger: Number.NaN, description: 'NaN' },
-    { latestLedger: Number.POSITIVE_INFINITY, description: 'Infinity' },
-  ])(
-    'should drop $description latestLedger ($latestLedger)',
-    ({ latestLedger }) => {
-      const result = simulateTransactionAdapter({ latestLedger })
-      expect(result.success).toBe(true)
-      expect(result.latestLedger).toBeUndefined()
-    },
-  )
+  it('accepts a nonnegative integer latest ledger', () => {
+    expect(simulateTransactionAdapter({ latestLedger: 100 })).toMatchObject({
+      success: true,
+      latestLedger: 100,
+    })
+  })
 
   it('should preserve valid latestLedger values including zero', () => {
     expect(simulateTransactionAdapter({ latestLedger: 0 }).latestLedger).toBe(0)
@@ -234,8 +299,72 @@ describe('simulateTransaction request helper', () => {
       expect.objectContaining({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: expect.stringContaining('"method":"simulateTransaction"'),
       }),
     )
+    expect(
+      JSON.parse(vi.mocked(fetch).mock.calls[0][1]?.body as string),
+    ).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'simulateTransaction',
+      params: { transaction: 'base64-xdr' },
+    })
+  })
+
+  it('aborts an older submit and ignores its late response', async () => {
+    let resolveFirst: (response: Response) => void = () => {}
+    let resolveSecond: (response: Response) => void = () => {}
+    let firstSignal: AbortSignal | undefined
+    vi.mocked(fetch)
+      .mockImplementationOnce((_input, init) => {
+        firstSignal = init?.signal as AbortSignal
+        return new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+      })
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve
+          }),
+      )
+
+    const firstRequest = simulateTransaction({
+      rpcUrl: mockRpcUrl,
+      transaction: 'older-xdr',
+    })
+    const secondRequest = simulateTransaction({
+      rpcUrl: mockRpcUrl,
+      transaction: 'newer-xdr',
+    })
+
+    expect(firstSignal?.aborted).toBe(true)
+
+    resolveSecond({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { latestLedger: 2 },
+        }),
+    } as Response)
+    const secondResult = await secondRequest
+
+    resolveFirst({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { latestLedger: 1 },
+        }),
+    } as Response)
+    const firstResult = await firstRequest
+
+    expect(secondResult.success).toBe(true)
+    expect(secondResult.latestLedger).toBe(2)
+    expect(firstResult).toEqual({ success: false, error: 'Request aborted' })
   })
 
   it('returns a handled error on JSON-RPC error', async () => {
@@ -258,11 +387,32 @@ describe('simulateTransaction request helper', () => {
     expect(result.error).toContain('RPC Error')
   })
 
+  it('maps JSON-RPC auth errors to actionable messages', async () => {
+    const rpcResponse = {
+      jsonrpc: '2.0',
+      id: 1,
+      error: { code: -32000, message: 'Invalid auth entry' },
+    }
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      json: async () => rpcResponse,
+    } as Response)
+
+    const result = await simulateTransaction({
+      rpcUrl: mockRpcUrl,
+      transaction: 'base64-xdr',
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('Authorization entry is invalid')
+  })
+
   it('returns a handled error on HTTP failure', async () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: false,
       status: 500,
       statusText: 'Internal Server Error',
+      text: () => Promise.resolve(''),
     } as Response)
 
     const result = await simulateTransaction({
@@ -301,6 +451,8 @@ describe('simulateTransaction request helper', () => {
   })
 
   it('returns a handled abort error when the caller signal is aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
     vi.mocked(fetch).mockRejectedValue(
       new DOMException('The operation was aborted.', 'AbortError'),
     )
@@ -308,6 +460,7 @@ describe('simulateTransaction request helper', () => {
     const result = await simulateTransaction({
       rpcUrl: mockRpcUrl,
       transaction: 'base64-xdr',
+      signal: controller.signal,
     })
 
     expect(result.success).toBe(false)
