@@ -9,6 +9,7 @@ import {
   mergeNetworkConfig,
   sanitizeSnapshots,
 } from '../../store/persistence'
+import { diffSnapshotEntries } from '../../lib/diff/diffSnapshotEntries'
 import { ByteDisplayMode, DEFAULT_NETWORKS } from '../../store/types'
 import { formatScBytesByPreference } from '../../lib/format/formatScBytesByPreference'
 import type { LedgerEntry } from '../../store/types'
@@ -284,6 +285,58 @@ describe('LensStore Hydration', () => {
       formatScBytesByPreference(restoredValue, ByteDisplayMode.BASE64),
     ).toBe(before.base64)
     expect(before).toEqual({ hex: '0x0001ff', base64: 'AAH/' })
+  })
+
+  it('keeps one 42-to-43 modified entry after snapshot reload', async () => {
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        value: {
+          key: 'value',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: 42,
+          lastModifiedLedger: 9,
+        },
+      },
+      10,
+      'Value 42',
+    )
+    useLensStore.getState().addSnapshot(
+      'C1',
+      {
+        value: {
+          key: 'value',
+          contractId: 'C1',
+          type: 'ContractData',
+          value: 43,
+          lastModifiedLedger: 10,
+        },
+      },
+      11,
+      'Value 43',
+    )
+
+    const savedState = localStorage.getItem(NETWORK_CONFIG_STORAGE_KEY)
+    expect(savedState).not.toBeNull()
+    if (savedState === null) throw new Error('Snapshot pair was not saved')
+    useLensStore.setState({ snapshots: {} })
+    localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
+    await useLensStore.persist.rehydrate()
+
+    const snapshots = useLensStore.getState().getSnapshots('C1')
+    expect(snapshots).toHaveLength(2)
+    const diff = diffSnapshotEntries(
+      snapshots[0].ledgerData,
+      snapshots[1].ledgerData,
+    )
+    expect(diff).toHaveLength(1)
+    expect(diff[0]).toMatchObject({
+      key: 'value',
+      status: 'modified',
+      prevEntry: { value: 42 },
+      nextEntry: { value: 43 },
+    })
   })
 
   it('hydrates with a valid preset network from storage', async () => {
