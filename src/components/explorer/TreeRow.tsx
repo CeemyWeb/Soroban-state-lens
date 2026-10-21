@@ -1,8 +1,9 @@
+import { useState } from 'react'
 import { formatScBytesByPreference } from '../../lib/format/formatScBytesByPreference'
 import { formatScIntegerByPreference } from '../../lib/format/formatScIntegerByPreference'
 import { useLensStore } from '../../store/lensStore'
 import type { BigIntDisplayMode, ByteDisplayMode } from '../../store/types'
-import type { KeyboardEvent, Ref } from 'react'
+import type { KeyboardEvent, MouseEvent, Ref } from 'react'
 import type { FlatTreeRow } from '../../lib/tree/flatTreeRow'
 
 interface TreeRowProps {
@@ -121,12 +122,29 @@ export function TreeRow({
   onKeyNavigate,
   onFocus,
 }: TreeRowProps) {
+  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>(
+    'idle',
+  )
   const byteDisplayMode = useLensStore(
     (state) => state.preferences.byteDisplayMode,
   )
   const bigIntDisplayMode = useLensStore(
     (state) => state.preferences.bigIntDisplayMode,
   )
+
+  const handleCopyCanonicalKey = async (
+    event: MouseEvent<HTMLButtonElement>,
+  ) => {
+    event.stopPropagation()
+    if (!row.canonicalKey) return
+
+    try {
+      await navigator.clipboard.writeText(row.canonicalKey)
+      setCopyStatus('copied')
+    } catch {
+      setCopyStatus('failed')
+    }
+  }
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowDown') {
@@ -191,6 +209,11 @@ export function TreeRow({
         <span className="font-mono text-[10px] uppercase text-primary border border-primary/30 rounded px-1 py-0.5">
           {typeBadge(row)}
         </span>
+        {row.durability ? (
+          <span className="font-mono text-[10px] uppercase text-text-muted border border-white/10 rounded px-1 py-0.5">
+            {row.durability}
+          </span>
+        ) : null}
         {row.expired ? (
           <span className="font-mono text-[10px] uppercase text-red-300 border border-red-400/40 rounded px-1 py-0.5">
             Expired
@@ -200,6 +223,27 @@ export function TreeRow({
           {formatPreview(row, byteDisplayMode, bigIntDisplayMode)}
         </span>
       </div>
+      {row.canonicalKey && (
+        <button
+          type="button"
+          className="px-2 text-[10px] font-mono text-text-muted hover:text-white"
+          aria-label={`Copy canonical ledger key ${row.canonicalKey}`}
+          title={
+            copyStatus === 'failed'
+              ? 'Copy failed'
+              : copyStatus === 'copied'
+                ? 'Copied'
+                : 'Copy canonical ledger key'
+          }
+          onClick={handleCopyCanonicalKey}
+        >
+          {copyStatus === 'failed'
+            ? 'Copy failed'
+            : copyStatus === 'copied'
+              ? 'Copied'
+              : 'Copy key'}
+        </button>
+      )}
     </div>
   )
 }

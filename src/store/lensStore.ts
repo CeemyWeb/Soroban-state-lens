@@ -3,8 +3,14 @@ import { persist } from 'zustand/middleware'
 import { useShallow } from 'zustand/react/shallow'
 
 import { deepClone } from '../lib/deepClone'
+import { isSampleContractId } from '../lib/demoContract'
 import { getLedgerEntries } from '../lib/network/getLedgerEntries'
+import {
+  decodeLedgerEntryMetadata,
+  decodeLedgerKeyInfo,
+} from '../lib/network/decodeLedgerEntry'
 import { mapLedgerEntriesToStoreEntries } from '../lib/network/mapLedgerEntriesToStoreEntries'
+import { isContractId } from '../lib/validation/isContractId'
 import { normalizeContractIdInput } from '../lib/validation/normalizeContractIdInput'
 import {
   isDecoderWorkerError,
@@ -28,10 +34,7 @@ import {
   sanitizeNetworkSnapshots,
   serializeNetworkConfigForStorage,
 } from './persistence'
-import {
-  migrateLegacySnapshotEntries,
-  serializeSnapshots,
-} from './snapshotPersistence'
+import { serializeSnapshots } from './snapshotPersistence'
 import { createPreferencesSlice } from './preferencesSlice'
 import {
   ConnectionStatus,
@@ -41,6 +44,7 @@ import {
   DEFAULT_SNAPSHOT_RETENTION_LIMIT,
 } from './types'
 
+import type { Node } from '../types/node'
 import type { PersistedState } from './persistence'
 import type {
   ContractLoadSlice,
@@ -502,12 +506,32 @@ const createContractLoadSlice = (
       activeDecoder?.terminate()
       activeDecoder = null
 
+      if (isSampleContractId(contractId)) {
+        activeController = null
+        const hasDemoEntries = Object.values(get().ledgerData).some((entry) =>
+          isSampleContractId(entry.contractId),
+        )
+        set(() => ({
+          activeContractId: contractId,
+          contractLoadStatus: hasDemoEntries
+            ? ContractLoadStatus.SUCCESS
+            : ContractLoadStatus.EMPTY,
+          contractLoadError: null,
+          contractLoadErrorCode: null,
+          contractLoadAttemptCount: null,
+        }))
+        return
+      }
+
       const controller = new AbortController()
       activeController = controller
       let decoder: RecoveringDecoder | null = null
       const { signal } = controller
       const isRequestStale = () =>
         currentRequestId !== requestId || signal.aborted
+      // Defense in depth (SSL#733): a direct live load without a preceding
+      // setActiveContractId(live) must not retain demo records.
+      get().clearDemoRecords()
       set(() => ({
         activeContractId: contractId,
         contractLoadStatus: ContractLoadStatus.LOADING,
@@ -535,7 +559,17 @@ const createContractLoadSlice = (
         }
 
         const decodedValuesByKey: Record<string, unknown> = {}
+        const decodedStorageKeysByKey: Partial<Record<string, Node>> = {}
         const decodeErrorReasonsByKey: Record<string, string> = {}
+        const metadataByKey: Record<
+          string,
+          ReturnType<typeof decodeLedgerEntryMetadata>
+        > = {}
+        const keyInfoByKey: Record<
+          string,
+          ReturnType<typeof decodeLedgerKeyInfo>
+        > = {}
+        const foreignContractKeys = new Set<string>()
         const recoveringDecoder = new RecoveringDecoder()
         decoder = recoveringDecoder
         activeDecoder = recoveringDecoder
@@ -546,7 +580,72 @@ const createContractLoadSlice = (
               return
             }
 
-            const result = await recoveringDecoder.decodeScVal(entry.xdr)
+            const keyInfo = decodeLedgerKeyInfo(entry.key)
+            keyInfoByKey[entry.key] = keyInfo
+            if (keyInfo.type !== 'ContractData') {
+              decodedValuesByKey[entry.key] = {
+                kind: 'raw-xdr',
+                xdr: entry.xdr,
+              }
+              continue
+            }
+
+            if (
+              keyInfo.contractId &&
+              isContractId(contractId) &&
+              keyInfo.contractId !== contractId
+            ) {
+              foreignContractKeys.add(entry.key)
+              continue
+            }
+
+            let metadata: ReturnType<typeof decodeLedgerEntryMetadata>
+            try {
+              metadata = decodeLedgerEntryMetadata(entry)
+            } catch {
+              decodedValuesByKey[entry.key] = {
+                kind: 'raw-xdr',
+                xdr: entry.xdr,
+              }
+              decodeErrorReasonsByKey[entry.key] = 'invalid-ledger-entry-data'
+              continue
+            }
+
+            if (
+              metadata.contractId &&
+              isContractId(contractId) &&
+              metadata.contractId !== contractId
+            ) {
+              foreignContractKeys.add(entry.key)
+              continue
+            }
+
+            metadataByKey[entry.key] = metadata
+            if (
+              metadata.type !== 'ContractData' ||
+              metadata.storageKeyXdr === undefined ||
+              metadata.valueXdr === undefined
+            ) {
+              decodedValuesByKey[entry.key] = {
+                kind: 'raw-xdr',
+                xdr: entry.xdr,
+              }
+              continue
+            }
+
+            const decodedStorageKey = await recoveringDecoder.decodeScVal(
+              metadata.storageKeyXdr,
+            )
+            if (isRequestStale()) {
+              return
+            }
+            if (!isDecoderWorkerError(decodedStorageKey)) {
+              decodedStorageKeysByKey[entry.key] = decodedStorageKey
+            }
+
+            const result = await recoveringDecoder.decodeScVal(
+              metadata.valueXdr,
+            )
             if (isRequestStale()) {
               return
             }
@@ -579,17 +678,24 @@ const createContractLoadSlice = (
 
         const mappedEntries = mapLedgerEntriesToStoreEntries({
           contractId,
-          entries,
+          entries: entries.filter(
+            (entry) => !foreignContractKeys.has(entry.key),
+          ),
           latestLedger,
           decodedValuesByKey,
+          decodedStorageKeysByKey,
           decodeErrorReasonsByKey,
+          keyInfoByKey,
+          metadataByKey,
         })
 
         set((state) => ({
           ledgerData: {
             ...Object.fromEntries(
               Object.entries(state.ledgerData).filter(
-                ([, entry]) => entry.contractId !== contractId,
+                ([, entry]) =>
+                  isSampleContractId(contractId) ||
+                  entry.contractId !== contractId,
               ),
             ),
             ...Object.fromEntries(
@@ -638,7 +744,7 @@ const createContractLoadSlice = (
       const state = get()
       const contractId = state.activeContractId
 
-      if (!contractId) {
+      if (!contractId || isSampleContractId(contractId)) {
         return
       }
 
@@ -839,11 +945,14 @@ export const useLensStore = create<LensStore>()(
       storage: createSafeStorage<PersistedState>(),
       version: PERSISTED_STATE_VERSION,
       migrate: (persistedState, version) => {
-        if (version === 0 || version === PERSISTED_STATE_VERSION) {
+        if (
+          typeof persistedState !== 'object' ||
+          persistedState === null ||
+          version === 0 ||
+          version === 1 ||
+          version === PERSISTED_STATE_VERSION
+        ) {
           return persistedState as PersistedState
-        }
-        if (version === 1) {
-          return migrateLegacySnapshotEntries(persistedState) as PersistedState
         }
 
         return {

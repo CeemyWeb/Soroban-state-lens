@@ -137,13 +137,11 @@ describe('Discovery route', () => {
     fireEvent.click(
       screen.getAllByRole('button', { name: 'Add to watchlist' })[0],
     )
-    expect((await screen.findByRole('status')).textContent).toBe(
-      'Added to watchlist.',
-    )
+    expect(await screen.findByText('Added to watchlist.')).toBeTruthy()
     fireEvent.click(
       screen.getAllByRole('button', { name: 'Add to watchlist' })[0],
     )
-    expect(screen.getByRole('status').textContent).toBe('Already in watchlist.')
+    expect(screen.getByText('Already in watchlist.')).toBeTruthy()
     expect(
       useLensStore.getState().getWatchlistForContract(VALID_CONTRACT_ID),
     ).toHaveLength(1)

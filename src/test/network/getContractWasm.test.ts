@@ -34,7 +34,7 @@ describe('getContractWasm', () => {
 
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => mockRpcResponse,
+      json: () => Promise.resolve(mockRpcResponse),
     } as Response)
 
     const params: GetContractWasmParams = {
@@ -151,13 +151,13 @@ describe('getContractWasm', () => {
     // Spy on callRpc to return a well-formed success response whose id
     // is intentionally offset from the request id, verifying that
     // the adapter rejects the ID mismatch.
-    vi.spyOn(rpcClient, 'callRpc').mockImplementation(async (_config, body) => {
+    vi.spyOn(rpcClient, 'callRpc').mockImplementation((_config, body) => {
       const requestId = (body as { id?: number }).id
-      return {
+      return Promise.resolve({
         jsonrpc: '2.0',
         id: (requestId ?? 0) + 1000,
         result: { code: 'AQIDBA==' },
-      }
+      })
     })
 
     const result = await getContractWasm({

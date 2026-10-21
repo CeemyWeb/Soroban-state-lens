@@ -22,7 +22,7 @@ describe('contract index route', () => {
       options: {
         to: '/contracts/$contractId/explorer',
         params: { contractId: VALID_CONTRACT_ID },
-        search: { keys: '' },
+        search: { keys: '', mode: 'live' },
       },
     })
   })

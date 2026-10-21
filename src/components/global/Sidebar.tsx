@@ -10,12 +10,22 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from 'react'
 import { downloadSnapshotDiff } from '../../lib/diff/exportSnapshotDiff'
 import { resolveDiffStatus } from '../../lib/diff/resolveDiffStatus'
 import { formatContractIdShort } from '../../lib/format/formatContractIdShort'
 import { formatLedgerSequence } from '../../lib/format/formatLedgerSequence'
 import { useLensStore, useSnapshots } from '../../store/lensStore'
+import {
+  getSnapshotPersistenceFailed,
+  subscribeToSnapshotPersistence,
+} from '../../store/persistenceStatus'
 import type { LedgerEntry } from '../../store/types'
 
 interface SidebarProps {
@@ -69,6 +79,9 @@ export default function Sidebar({
   const activeContractLabel = activeContractId
     ? formatContractIdShort(activeContractId)
     : null
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [filterText, setFilterText] = useState('')
+  const collapseAll = useLensStore((state) => state.collapseAll)
 
   useEffect(() => {
     if (isPinned) return
@@ -122,12 +135,15 @@ export default function Sidebar({
                 <button
                   className="text-text-muted hover:text-white"
                   aria-label="Collapse all"
+                  onClick={collapseAll}
                 >
                   <ChevronUp size={18} />
                 </button>
                 <button
                   className="text-text-muted hover:text-white"
                   aria-label="Filter"
+                  aria-expanded={filterOpen}
+                  onClick={() => setFilterOpen((value) => !value)}
                 >
                   <Filter size={18} />
                 </button>
@@ -137,7 +153,25 @@ export default function Sidebar({
 
           {/* Panel Body */}
           <div className="flex-1 overflow-y-auto p-4 font-mono text-sm">
-            {isHistory ? <HistoryPanel /> : <TreePlaceholder />}
+            {isHistory ? (
+              <HistoryPanel />
+            ) : (
+              <>
+                {filterOpen && (
+                  <input
+                    type="search"
+                    aria-label="Filter ledger entries"
+                    placeholder="Filter ledger entries"
+                    value={filterText}
+                    onChange={(event) =>
+                      setFilterText(event.currentTarget.value)
+                    }
+                    className="mb-3 w-full rounded border border-border-dark bg-background-dark px-2 py-1 text-xs text-white"
+                  />
+                )}
+                <TreePlaceholder filterText={filterText} />
+              </>
+            )}
           </div>
         </div>
       </aside>
@@ -261,6 +295,8 @@ export default function Sidebar({
               <button
                 className="text-text-muted hover:text-white"
                 aria-label="Filter"
+                aria-expanded={filterOpen}
+                onClick={() => setFilterOpen((value) => !value)}
               >
                 <Filter size={18} />
               </button>
@@ -272,12 +308,33 @@ export default function Sidebar({
             >
               <X size={18} />
             </button>
+            {!isHistory && (
+              <button
+                className="text-text-muted hover:text-white"
+                aria-label="Collapse all"
+                onClick={collapseAll}
+              >
+                <ChevronUp size={18} />
+              </button>
+            )}
           </div>
         </div>
-
-        {/* Panel Body */}
         <div className="flex-1 overflow-y-auto p-4 font-mono text-sm">
-          {isHistory ? <HistoryPanel /> : <TreePlaceholder />}
+          {filterOpen && (
+            <input
+              type="search"
+              aria-label="Filter ledger entries"
+              placeholder="Filter ledger entries"
+              value={filterText}
+              onChange={(event) => setFilterText(event.currentTarget.value)}
+              className="mb-3 w-full rounded border border-border-dark bg-background-dark px-2 py-1 text-xs text-white"
+            />
+          )}
+          {isHistory ? (
+            <HistoryPanel />
+          ) : (
+            <TreePlaceholder filterText={filterText} />
+          )}
         </div>
       </aside>
     </>
@@ -290,6 +347,11 @@ export default function Sidebar({
 function HistoryPanel() {
   const activeContractId = useLensStore((state) => state.activeContractId)
   const snapshots = useSnapshots(activeContractId ?? '')
+  const snapshotPersistenceFailed = useSyncExternalStore(
+    subscribeToSnapshotPersistence,
+    getSnapshotPersistenceFailed,
+    getSnapshotPersistenceFailed,
+  )
 
   const addSnapshot = useLensStore((state) => state.addSnapshot)
   const removeSnapshot = useLensStore((state) => state.removeSnapshot)
@@ -298,6 +360,7 @@ function HistoryPanel() {
     null,
   )
   const [nextSnapshotId, setNextSnapshotId] = useState<string | null>(null)
+  const [captureStatus, setCaptureStatus] = useState<string | null>(null)
 
   const ledgerData = useLensStore((state) => state.ledgerData)
   const currentLedgerSequence = useLensStore(
@@ -312,13 +375,23 @@ function HistoryPanel() {
   }, [ledgerData, activeContractId])
 
   const handleCapture = () => {
-    if (!activeContractId || ledgerEntries.length === 0) return
+    if (!activeContractId) {
+      setCaptureStatus('No snapshot captured: load a contract first.')
+      return
+    }
+    if (ledgerEntries.length === 0) {
+      setCaptureStatus(
+        'No snapshot captured: query keys and load contract entries successfully to enable capturing.',
+      )
+      return
+    }
     const entriesDict: Record<string, (typeof ledgerEntries)[0]> = {}
     ledgerEntries.forEach((entry) => {
       entriesDict[entry.key] = entry
     })
     const label = `Snapshot #${snapshots.length + 1}`
     addSnapshot(activeContractId, entriesDict, currentLedgerSequence, label)
+    setCaptureStatus(`Captured ${label}.`)
   }
 
   const handleClearSnapshots = () => {
@@ -353,9 +426,18 @@ function HistoryPanel() {
   const comparisonNextSnapshot = selectedSnapshotsMatch
     ? latestNextSnapshot
     : nextSnapshot
+  const incompleteSnapshot = comparisonPreviousSnapshot?.incomplete
+    ? comparisonPreviousSnapshot
+    : comparisonNextSnapshot?.incomplete
+      ? comparisonNextSnapshot
+      : undefined
 
   const handleDownloadDiff = () => {
-    if (comparisonPreviousSnapshot && comparisonNextSnapshot) {
+    if (
+      comparisonPreviousSnapshot &&
+      comparisonNextSnapshot &&
+      !incompleteSnapshot
+    ) {
       downloadSnapshotDiff(comparisonPreviousSnapshot, comparisonNextSnapshot)
     }
   }
@@ -375,7 +457,13 @@ function HistoryPanel() {
 
   // Compute the selected diff summary if 2 or more snapshots exist
   const diffSummary = useMemo(() => {
-    if (!comparisonPreviousSnapshot || !comparisonNextSnapshot) return null
+    if (
+      !comparisonPreviousSnapshot ||
+      !comparisonNextSnapshot ||
+      incompleteSnapshot
+    ) {
+      return null
+    }
 
     const prev = comparisonPreviousSnapshot
     const next = comparisonNextSnapshot
@@ -418,7 +506,12 @@ function HistoryPanel() {
       unchanged,
       total: allKeys.length,
     }
-  }, [comparisonNextSnapshot, comparisonPreviousSnapshot, snapshots])
+  }, [
+    comparisonNextSnapshot,
+    comparisonPreviousSnapshot,
+    incompleteSnapshot,
+    snapshots,
+  ])
 
   if (!activeContractId) {
     return (
@@ -439,6 +532,22 @@ function HistoryPanel() {
 
   return (
     <div className="flex flex-col gap-5 font-mono select-none">
+      <p
+        role="status"
+        aria-live="polite"
+        className="text-[10px] text-text-muted text-center"
+      >
+        {captureStatus ?? ''}
+      </p>
+      {snapshotPersistenceFailed && snapshots.length > 0 && (
+        <p
+          role="alert"
+          className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[11px] leading-relaxed text-amber-200"
+        >
+          Snapshot changes are in memory, but browser storage failed. Reloading
+          will discard them.
+        </p>
+      )}
       {hasInsufficient ? (
         // Empty State / Capture First View
         <div className="flex flex-col gap-4 p-4 bg-surface-dark/45 border border-border-dark/60 rounded-xl relative overflow-hidden group">
@@ -466,10 +575,9 @@ function HistoryPanel() {
             onClick={handleCapture}
             aria-keyshortcuts="Control+Shift+S Meta+Shift+S"
             title="Keyboard shortcut: Ctrl+Shift+S or Command+Shift+S"
-            disabled={ledgerEntries.length === 0}
             className={`w-full py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
               ledgerEntries.length === 0
-                ? 'bg-white/5 border border-border-dark/40 text-text-muted cursor-not-allowed opacity-50'
+                ? 'bg-white/5 border border-border-dark/40 text-text-muted hover:bg-white/10'
                 : 'bg-primary text-white hover:bg-primary-hover hover:scale-[1.01] active:scale-[0.99] shadow-[0_0_15px_rgba(165,87,255,0.25)]'
             }`}
           >
@@ -479,7 +587,6 @@ function HistoryPanel() {
           <p className="text-[10px] text-text-muted text-center">
             Shortcut: Ctrl/⌘ + Shift + S
           </p>
-
           {ledgerEntries.length === 0 && (
             <p className="text-[10px] text-amber-500/80 text-center leading-relaxed">
               * Query keys and load contract entries successfully to enable
@@ -519,6 +626,14 @@ function HistoryPanel() {
               </span>
             </div>
 
+            {incompleteSnapshot && (
+              <p role="alert" className="text-xs text-amber-400">
+                {incompleteSnapshot.label ||
+                  `Snapshot #${snapshots.indexOf(incompleteSnapshot) + 1}`}{' '}
+                has rejected entries. Recapture this snapshot before comparing.
+              </p>
+            )}
+
             <div className="grid grid-cols-2 gap-2 text-[10px]">
               <label className="flex flex-col gap-1 text-text-muted">
                 From snapshot
@@ -534,7 +649,10 @@ function HistoryPanel() {
                     <option
                       key={snapshot.id}
                       value={snapshot.id}
-                      disabled={snapshot.id === comparisonNextSnapshot?.id}
+                      disabled={
+                        snapshot.incomplete ||
+                        snapshot.id === comparisonNextSnapshot?.id
+                      }
                     >
                       {snapshot.label || `Snapshot #${index + 1}`}
                     </option>
@@ -553,7 +671,10 @@ function HistoryPanel() {
                     <option
                       key={snapshot.id}
                       value={snapshot.id}
-                      disabled={snapshot.id === comparisonPreviousSnapshot?.id}
+                      disabled={
+                        snapshot.incomplete ||
+                        snapshot.id === comparisonPreviousSnapshot?.id
+                      }
                     >
                       {snapshot.label || `Snapshot #${index + 1}`}
                     </option>
@@ -563,50 +684,51 @@ function HistoryPanel() {
             </div>
 
             {/* Counts Grid */}
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-2.5 rounded-lg bg-green-500/10 border border-green-500/20 flex flex-col gap-0.5 hover:bg-green-500/15 transition-colors">
-                <span className="text-green-400 font-bold text-base font-mono">
-                  +{diffSummary?.created}
-                </span>
-                <span className="text-[9px] text-green-300/80 uppercase font-bold tracking-wider">
-                  Created
-                </span>
+            {!incompleteSnapshot && (
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="p-2.5 rounded-lg bg-green-500/10 border border-green-500/20 flex flex-col gap-0.5 hover:bg-green-500/15 transition-colors">
+                  <span className="text-green-400 font-bold text-base font-mono">
+                    +{diffSummary?.created}
+                  </span>
+                  <span className="text-[9px] text-green-300/80 uppercase font-bold tracking-wider">
+                    Created
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 flex flex-col gap-0.5 hover:bg-red-500/15 transition-colors">
+                  <span className="text-red-400 font-bold text-base font-mono">
+                    -{diffSummary?.deleted}
+                  </span>
+                  <span className="text-[9px] text-red-300/80 uppercase font-bold tracking-wider">
+                    Deleted
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex flex-col gap-0.5 hover:bg-amber-500/15 transition-colors">
+                  <span className="text-amber-400 font-bold text-base font-mono">
+                    ~{diffSummary?.modified}
+                  </span>
+                  <span className="text-[9px] text-amber-300/80 uppercase font-bold tracking-wider">
+                    Modified
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg bg-white/5 border border-border-dark/50 flex flex-col gap-0.5 hover:bg-white/10 transition-colors">
+                  <span className="text-text-muted font-bold text-base font-mono">
+                    {diffSummary?.unchanged}
+                  </span>
+                  <span className="text-[9px] text-text-muted uppercase font-bold tracking-wider">
+                    Unchanged
+                  </span>
+                </div>
               </div>
-              <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 flex flex-col gap-0.5 hover:bg-red-500/15 transition-colors">
-                <span className="text-red-400 font-bold text-base font-mono">
-                  -{diffSummary?.deleted}
-                </span>
-                <span className="text-[9px] text-red-300/80 uppercase font-bold tracking-wider">
-                  Deleted
-                </span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 flex flex-col gap-0.5 hover:bg-amber-500/15 transition-colors">
-                <span className="text-amber-400 font-bold text-base font-mono">
-                  ~{diffSummary?.modified}
-                </span>
-                <span className="text-[9px] text-amber-300/80 uppercase font-bold tracking-wider">
-                  Modified
-                </span>
-              </div>
-              <div className="p-2.5 rounded-lg bg-white/5 border border-border-dark/50 flex flex-col gap-0.5 hover:bg-white/10 transition-colors">
-                <span className="text-text-muted font-bold text-base font-mono">
-                  {diffSummary?.unchanged}
-                </span>
-                <span className="text-[9px] text-text-muted uppercase font-bold tracking-wider">
-                  Unchanged
-                </span>
-              </div>
-            </div>
+            )}
 
             <div className="pt-2 flex gap-2">
               <button
                 onClick={handleCapture}
                 aria-keyshortcuts="Control+Shift+S Meta+Shift+S"
                 title="Keyboard shortcut: Ctrl+Shift+S or Command+Shift+S"
-                disabled={ledgerEntries.length === 0}
                 className={`flex-1 py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                   ledgerEntries.length === 0
-                    ? 'bg-white/5 border border-border-dark/40 text-text-muted cursor-not-allowed opacity-50'
+                    ? 'bg-white/5 border border-border-dark/40 text-text-muted hover:bg-white/10'
                     : 'bg-primary text-white hover:bg-primary-hover shadow-[0_0_15px_rgba(165,87,255,0.2)]'
                 }`}
               >
@@ -616,6 +738,7 @@ function HistoryPanel() {
               <button
                 onClick={handleDownloadDiff}
                 aria-label="Download snapshot diff as JSON"
+                disabled={Boolean(incompleteSnapshot)}
                 className="py-2 px-3 rounded-lg bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 text-blue-400 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                 title="Download snapshot diff as JSON"
               >
@@ -687,47 +810,81 @@ function HistoryPanel() {
 /**
  * Placeholder tree content - will be replaced with actual tree component
  */
-function TreePlaceholder() {
+function TreePlaceholder({ filterText }: { filterText: string }) {
+  const expandedNodes = useLensStore((state) => state.expandedNodes)
+  const toggleExpanded = useLensStore((state) => state.toggleExpanded)
+  const normalizedFilter = filterText.trim().toLowerCase()
+  const roots = [
+    {
+      id: 'sidebar:contract-registry',
+      label: 'Contract_Registry',
+      child: 'Registry_Config',
+      type: 'Data',
+    },
+    {
+      id: 'sidebar:system-contracts',
+      label: 'System_Contracts',
+      child: 'System_Contract_Data',
+      type: 'Data',
+    },
+    {
+      id: 'sidebar:wasm-cache',
+      label: 'WASM_Cache',
+      child: 'Contract_WASM',
+      type: 'Code',
+    },
+  ]
+  const visibleRoots = roots.filter((root) =>
+    `${root.label} ${root.child} ${root.type}`
+      .toLowerCase()
+      .includes(normalizedFilter),
+  )
+
   return (
     <div className="space-y-1">
-      {/* Expanded folder */}
-      <div className="group">
-        <div className="flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded cursor-pointer text-white">
-          <ChevronDown size={16} className="text-text-muted" />
-          <span className="text-amber-500">📁</span>
-          <span className="truncate">Contract_Registry</span>
-        </div>
-        <div className="pl-4 ml-2 border-l border-border-dark">
-          <div className="flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded cursor-pointer text-text-muted group/item">
-            <span className="w-4" />
-            <span className="text-blue-400">📄</span>
-            <span className="flex-1 truncate group-hover/item:text-white">
-              Registry_Config
-            </span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-dark border border-border-dark">
-              Data
-            </span>
+      {visibleRoots.map((root) => {
+        const isExpanded = expandedNodes.includes(root.id)
+        const childMatches = root.child.toLowerCase().includes(normalizedFilter)
+
+        return (
+          <div className="group" key={root.id}>
+            <button
+              type="button"
+              aria-label={`Toggle ${root.label}`}
+              aria-expanded={isExpanded}
+              onClick={() => toggleExpanded(root.id)}
+              className="w-full flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded text-left text-white"
+            >
+              {isExpanded ? (
+                <ChevronDown size={16} className="text-text-muted" />
+              ) : (
+                <ChevronRight size={16} className="text-text-muted" />
+              )}
+              <span className="text-amber-500">📁</span>
+              <span className="truncate">{root.label}</span>
+            </button>
+            {(isExpanded || (normalizedFilter && childMatches)) && (
+              <div className="pl-4 ml-2 border-l border-border-dark">
+                {childMatches && (
+                  <div className="flex items-center gap-2 py-1.5 px-2 text-text-muted">
+                    <span className="w-4" />
+                    <span className="text-blue-400">📄</span>
+                    <span className="flex-1 truncate">{root.child}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-dark border border-border-dark">
+                      {root.type}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      </div>
-
-      {/* Collapsed folder */}
-      <div className="group">
-        <div className="flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded cursor-pointer text-text-muted hover:text-white">
-          <ChevronRight size={16} className="text-text-muted" />
-          <span className="text-text-muted">📁</span>
-          <span className="truncate">System_Contracts</span>
-        </div>
-      </div>
-
-      {/* Another collapsed folder */}
-      <div className="group">
-        <div className="flex items-center gap-2 py-1.5 px-2 hover:bg-white/5 rounded cursor-pointer text-text-muted hover:text-white">
-          <ChevronRight size={16} className="text-text-muted" />
-          <span className="text-text-muted">📁</span>
-          <span className="truncate">WASM_Cache</span>
-        </div>
-      </div>
+        )
+      })}
+      {visibleRoots.length === 0 && (
+        <p className="px-2 py-1.5 text-xs text-text-muted">
+          No matching ledger entries
+        </p>
+      )}
     </div>
   )
 }

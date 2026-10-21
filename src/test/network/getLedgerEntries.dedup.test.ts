@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AbortError, getLedgerEntries } from '../../lib/network/getLedgerEntries'
+import {
+  AbortError,
+  getLedgerEntries,
+} from '../../lib/network/getLedgerEntries'
 
 describe('getLedgerEntries deduplication and RPC URL normalization', () => {
   const mockRpcUrl = 'https://test.rpc.url/'
@@ -29,7 +32,7 @@ describe('getLedgerEntries deduplication and RPC URL normalization', () => {
 
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => mockRpcResponse,
+      json: () => Promise.resolve(mockRpcResponse),
     } as Response)
 
     const res = await getLedgerEntries({
@@ -44,8 +47,18 @@ describe('getLedgerEntries deduplication and RPC URL normalization', () => {
 
     expect(res.latestLedger).toBe(5)
     expect(res.entries).toEqual([
-      { key: 'k1', xdr: 'a', lastModifiedLedgerSeq: undefined, liveUntilLedgerSeq: undefined },
-      { key: 'k2', xdr: 'c', lastModifiedLedgerSeq: undefined, liveUntilLedgerSeq: undefined },
+      {
+        key: 'k1',
+        xdr: 'a',
+        lastModifiedLedgerSeq: undefined,
+        liveUntilLedgerSeq: undefined,
+      },
+      {
+        key: 'k2',
+        xdr: 'c',
+        lastModifiedLedgerSeq: undefined,
+        liveUntilLedgerSeq: undefined,
+      },
     ])
   })
 

@@ -4,6 +4,7 @@ import {
   AbortError,
   getLedgerEntries,
 } from '../../lib/network/getLedgerEntries'
+import { ledgerResponseFixture } from './fixtures/ledgerResponseFixture'
 
 import type { GetLedgerEntriesParams } from '../../lib/network/getLedgerEntries'
 
@@ -27,50 +28,7 @@ describe('getLedgerEntries', () => {
 
   describe('success scenarios', () => {
     it('fetches ledger entries successfully', async () => {
-      const mockRpcResponse = {
-        jsonrpc: '2.0',
-        id: 1,
-        result: {
-          entries: [
-            {
-              key: 'key1',
-              xdr: 'xdr1',
-              lastModifiedLedgerSeq: 100,
-              liveUntilLedgerSeq: 200,
-            },
-            {
-              key: 'key2',
-              xdr: 'xdr2',
-              lastModifiedLedgerSeq: 101,
-              liveUntilLedgerSeq: 201,
-            },
-          ],
-          latestLedger: 150,
-        },
-      }
-
-      vi.mocked(fetch).mockResolvedValue({
-        ok: true,
-        json: async () => mockRpcResponse,
-      } as Response)
-
-      const params: GetLedgerEntriesParams = {
-        rpcUrl: mockRpcUrl,
-        keys: mockKeys,
-      }
-
-      const result = await getLedgerEntries(params)
-
-      expect(fetch).toHaveBeenCalledWith(
-        mockRpcUrl,
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: expect.stringContaining('"method":"getLedgerEntries"'),
-        }),
-      )
-
-      expect(result).toEqual({
+      const fixture = {
         entries: [
           {
             key: 'key1',
@@ -86,7 +44,76 @@ describe('getLedgerEntries', () => {
           },
         ],
         latestLedger: 150,
+      }
+
+      vi.mocked(fetch).mockImplementation((_input, init) =>
+        Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve(
+              ledgerResponseFixture(String(init?.body), mockKeys, fixture),
+            ),
+        } as Response),
+      )
+
+      const params: GetLedgerEntriesParams = {
+        rpcUrl: mockRpcUrl,
+        keys: mockKeys,
+      }
+
+      const result = await getLedgerEntries(params)
+
+      expect(fetch).toHaveBeenCalledWith(
+        mockRpcUrl,
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: expect.stringContaining(
+            '"method":"getLedgerEntries","params":{"keys":["key1","key2"]}',
+          ),
+        }),
+      )
+      const requestBody = JSON.parse(
+        vi.mocked(fetch).mock.calls[0]?.[1]?.body as string,
+      ) as { params: unknown }
+      expect(requestBody.params).toEqual({ keys: mockKeys })
+
+      expect(result).toEqual({
+        ...fixture,
       })
+    })
+
+    it('rejects positional params and returns the fixture for named keys', () => {
+      const result = {
+        entries: [{ key: 'key1', xdr: 'xdr1' }],
+        latestLedger: 150,
+      }
+
+      expect(() =>
+        ledgerResponseFixture(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'getLedgerEntries',
+            params: [mockKeys],
+            id: 1,
+          }),
+          mockKeys,
+          result,
+        ),
+      ).toThrow('named keys')
+
+      expect(
+        ledgerResponseFixture(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'getLedgerEntries',
+            params: { keys: mockKeys },
+            id: 1,
+          }),
+          mockKeys,
+          result,
+        ),
+      ).toEqual({ jsonrpc: '2.0', id: 1, result })
     })
 
     it('handles empty entries array from RPC', async () => {
@@ -101,7 +128,7 @@ describe('getLedgerEntries', () => {
 
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => mockRpcResponse,
+        json: () => Promise.resolve(mockRpcResponse),
       } as Response)
 
       const result = await getLedgerEntries({
@@ -183,7 +210,7 @@ describe('getLedgerEntries', () => {
 
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => errorResponse,
+        json: () => Promise.resolve(errorResponse),
       } as Response)
 
       await expect(
@@ -198,10 +225,25 @@ describe('getLedgerEntries', () => {
       })
     })
 
+    it('surfaces invalid-parameter RPC errors', async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          jsonrpc: '2.0',
+          id: 1,
+          error: { code: -32602, message: 'Invalid params' },
+        }),
+      } as Response)
+
+      await expect(
+        getLedgerEntries({ rpcUrl: mockRpcUrl, keys: mockKeys }),
+      ).rejects.toThrow('RPC Error (-32602): Invalid params')
+    })
+
     it('throws error on invalid JSON-RPC format', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({ invalid: 'response' }),
+        json: () => Promise.resolve({ invalid: 'response' }),
       } as Response)
 
       await expect(
@@ -215,19 +257,20 @@ describe('getLedgerEntries', () => {
     it('filters malformed ledger entries while preserving valid siblings', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({
-          jsonrpc: '2.0',
-          id: 1,
-          result: {
-            entries: [
-              { key: 'key1', xdr: 'xdr1' },
-              { key: 'key2' },
-              { key: ' ', xdr: 'xdr3' },
-              { key: 'key4', xdr: '  ' },
-            ],
-            latestLedger: 100,
-          },
-        }),
+        json: () =>
+          Promise.resolve({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              entries: [
+                { key: 'key1', xdr: 'xdr1' },
+                { key: 'key2' },
+                { key: ' ', xdr: 'xdr3' },
+                { key: 'key4', xdr: '  ' },
+              ],
+              latestLedger: 100,
+            },
+          }),
       } as Response)
 
       await expect(
@@ -244,14 +287,15 @@ describe('getLedgerEntries', () => {
     it('throws error when latestLedger is not a finite number', async () => {
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({
-          jsonrpc: '2.0',
-          id: 1,
-          result: {
-            entries: [{ key: 'key1', xdr: 'xdr1' }],
-            latestLedger: '100',
-          },
-        }),
+        json: () =>
+          Promise.resolve({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              entries: [{ key: 'key1', xdr: 'xdr1' }],
+              latestLedger: '100',
+            },
+          }),
       } as Response)
 
       await expect(
@@ -266,14 +310,15 @@ describe('getLedgerEntries', () => {
       // toRpcRequestId is mocked to return 1; response carries id: 9999
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({
-          jsonrpc: '2.0',
-          id: 9999,
-          result: {
-            entries: [{ key: 'key1', xdr: 'xdr1' }],
-            latestLedger: 100,
-          },
-        }),
+        json: () =>
+          Promise.resolve({
+            jsonrpc: '2.0',
+            id: 9999,
+            result: {
+              entries: [{ key: 'key1', xdr: 'xdr1' }],
+              latestLedger: 100,
+            },
+          }),
       } as Response)
 
       await expect(
@@ -285,11 +330,12 @@ describe('getLedgerEntries', () => {
       // toRpcRequestId is mocked to return 1; response carries id: 9999
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({
-          jsonrpc: '2.0',
-          id: 9999,
-          error: { code: -32600, message: 'Invalid Request' },
-        }),
+        json: () =>
+          Promise.resolve({
+            jsonrpc: '2.0',
+            id: 9999,
+            error: { code: -32600, message: 'Invalid Request' },
+          }),
       } as Response)
 
       await expect(
@@ -307,14 +353,15 @@ describe('getLedgerEntries', () => {
       async ({ latestLedger }) => {
         vi.mocked(fetch).mockResolvedValue({
           ok: true,
-          json: async () => ({
-            jsonrpc: '2.0',
-            id: 1,
-            result: {
-              entries: [{ key: 'key1', xdr: 'xdr1' }],
-              latestLedger,
-            },
-          }),
+          json: () =>
+            Promise.resolve({
+              jsonrpc: '2.0',
+              id: 1,
+              result: {
+                entries: [{ key: 'key1', xdr: 'xdr1' }],
+                latestLedger,
+              },
+            }),
         } as Response)
 
         await expect(
@@ -338,7 +385,7 @@ describe('getLedgerEntries', () => {
 
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => mockRpcResponse,
+        json: () => Promise.resolve(mockRpcResponse),
       } as Response)
 
       const result = await getLedgerEntries({
@@ -385,16 +432,17 @@ describe('getLedgerEntries', () => {
     it('throws AbortError if signal is aborted after fetch completes but before result return', async () => {
       const controller = new AbortController()
 
-      vi.mocked(fetch).mockImplementation(async () => {
+      vi.mocked(fetch).mockImplementation(() => {
         controller.abort()
-        return {
+        return Promise.resolve({
           ok: true,
-          json: async () => ({
-            jsonrpc: '2.0',
-            id: 1,
-            result: { entries: [], latestLedger: 100 },
-          }),
-        } as Response
+          json: () =>
+            Promise.resolve({
+              jsonrpc: '2.0',
+              id: 1,
+              result: { entries: [], latestLedger: 100 },
+            }),
+        } as Response)
       })
 
       await expect(
@@ -412,11 +460,12 @@ describe('getLedgerEntries', () => {
       const timeoutSpy = vi.spyOn(globalThis, 'setTimeout')
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => ({
-          jsonrpc: '2.0',
-          id: 1,
-          result: { entries: [], latestLedger: 100 },
-        }),
+        json: () =>
+          Promise.resolve({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { entries: [], latestLedger: 100 },
+          }),
       } as Response)
 
       await getLedgerEntries({ rpcUrl: mockRpcUrl, keys: mockKeys })
@@ -474,7 +523,7 @@ describe('getLedgerEntries', () => {
         } as Response)
         .mockResolvedValueOnce({
           ok: true,
-          json: async () => success,
+          json: () => Promise.resolve(success),
         } as Response)
 
       const result = await getLedgerEntries({
@@ -529,7 +578,7 @@ describe('getLedgerEntries', () => {
 
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => mockRpcResponse,
+        json: () => Promise.resolve(mockRpcResponse),
       } as Response)
 
       const result = await getLedgerEntries({
@@ -544,7 +593,12 @@ describe('getLedgerEntries', () => {
         throw new Error('Expected fetch request options')
       }
       const requestBody = JSON.parse(requestInit.body as string)
-      expect(requestBody.params[0]).toEqual(['key1', 'key2', 'key3'])
+      expect(requestBody).toEqual({
+        jsonrpc: '2.0',
+        method: 'getLedgerEntries',
+        params: { keys: ['key1', 'key2', 'key3'] },
+        id: 1,
+      })
 
       expect(result).toEqual({
         entries: [{ key: 'key1', xdr: 'xdr1', lastModifiedLedgerSeq: 100 }],
@@ -564,7 +618,7 @@ describe('getLedgerEntries', () => {
 
       vi.mocked(fetch).mockResolvedValue({
         ok: true,
-        json: async () => mockRpcResponse,
+        json: () => Promise.resolve(mockRpcResponse),
       } as Response)
 
       await getLedgerEntries({
@@ -578,7 +632,7 @@ describe('getLedgerEntries', () => {
         throw new Error('Expected fetch request options')
       }
       const requestBody = JSON.parse(requestInit.body as string)
-      expect(requestBody.params[0]).toEqual(['key1'])
+      expect(requestBody.params).toEqual({ keys: ['key1'] })
     })
 
     it('handles empty keys array after deduplication', async () => {

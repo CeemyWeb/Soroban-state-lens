@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as ledgerPoller from '../../lib/network/ledgerPoller'
 import { useContractLedgerPolling } from '../../lib/network/useContractLedgerPolling'
+import { SAMPLE_CONTRACT_ID } from '../../lib/demoContract'
 
 describe('useContractLedgerPolling', () => {
   afterEach(() => {
@@ -48,5 +49,24 @@ describe('useContractLedgerPolling', () => {
 
     unmount()
     expect(stop).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not start live RPC polling for the local demo contract', () => {
+    const start = vi.spyOn(ledgerPoller, 'startLedgerHeadPoll')
+    const refreshActiveKeys = vi.fn().mockResolvedValue(undefined)
+
+    const { unmount } = renderHook(() =>
+      useContractLedgerPolling({
+        contractId: SAMPLE_CONTRACT_ID,
+        keys: ['demo-key'],
+        rpcUrl: 'https://rpc-one.example',
+        refreshActiveKeys,
+      }),
+    )
+
+    expect(start).not.toHaveBeenCalled()
+    expect(refreshActiveKeys).not.toHaveBeenCalled()
+    unmount()
+    expect(start).not.toHaveBeenCalled()
   })
 })

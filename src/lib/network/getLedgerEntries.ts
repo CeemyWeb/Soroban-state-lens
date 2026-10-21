@@ -26,6 +26,8 @@ export interface GetLedgerEntriesResult {
   latestLedger: number
 }
 
+export const MAX_LEDGER_ENTRY_KEYS = 200
+
 export class AbortError extends Error {
   constructor(message = 'Request was aborted') {
     super(message)
@@ -101,6 +103,12 @@ export async function getLedgerEntries(
   if (signal?.aborted) {
     throw new AbortError()
   }
+  const uniqueKeys = [...new Set(keys)]
+  if (uniqueKeys.length > MAX_LEDGER_ENTRY_KEYS) {
+    throw new Error(
+      `Too many ledger entry keys: maximum is ${MAX_LEDGER_ENTRY_KEYS}`,
+    )
+  }
 
   // Stable guard: an empty keys array never reaches the RPC endpoint and
   // resolves to a handled empty result instead of an untyped request error.
@@ -121,7 +129,7 @@ export async function getLedgerEntries(
         attempts += 1
         const payload = buildJsonRpcRequest(
           'getLedgerEntries',
-          [keys],
+          { keys },
           requestId,
         )
         const requestController = new AbortController()
@@ -131,10 +139,7 @@ export async function getLedgerEntries(
           throw new AbortError()
         }
         signal?.addEventListener('abort', onCallerAbort, { once: true })
-        const timeoutId = setTimeout(
-          () => requestController.abort(),
-          timeoutMs,
-        )
+        const timeoutId = setTimeout(() => requestController.abort(), timeoutMs)
 
         let response: Response
         try {

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { InspectShell } from '../../components/explorer/InspectShell'
+import { SAMPLE_CONTRACT_ID } from '../../lib/demoContract'
 import { useLensStore } from '../../store/lensStore'
 
 vi.mock('@stellar/design-system', () => ({
@@ -60,6 +61,23 @@ describe('InspectShell', () => {
     expect(screen.getByText('1234567')).toBeTruthy()
     expect(screen.getByText('1235000')).toBeTruthy()
     expect(screen.getByText(storedEntry.rawXdr)).toBeTruthy()
+    expect(screen.queryByRole('note')).toBeNull()
+  })
+
+  it('labels the sample contract as local demo data', () => {
+    render(
+      <InspectShell
+        contractId={SAMPLE_CONTRACT_ID.toLowerCase()}
+        normalizedContractId={SAMPLE_CONTRACT_ID}
+        keyPath="/state/ledger"
+      />,
+    )
+
+    expect(
+      screen.getByRole('note', {
+        name: 'Local demo data. Ledger numbers are illustrative.',
+      }).textContent,
+    ).toContain('Ledger numbers are illustrative.')
   })
 
   it('shows the affected key path and expected/actual types for a schema mismatch', () => {
@@ -193,6 +211,30 @@ describe('InspectShell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add to watchlist' }))
 
     expect(addToWatchlist).toHaveBeenCalledWith('C123', '/state/ledger')
+  })
+
+  it('pins padded route IDs to the normalized contract watchlist bucket', () => {
+    useLensStore.setState({
+      watchlist: {},
+      ledgerData: { [storedEntry.key]: storedEntry },
+    })
+
+    render(
+      <InspectShell
+        contractId=" c123 "
+        normalizedContractId="C123"
+        keyPath="/state/ledger"
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add to watchlist' }))
+
+    expect(
+      useLensStore.getState().getWatchlistForContract('C123'),
+    ).toHaveLength(1)
+    expect(
+      useLensStore.getState().getWatchlistForContract(' c123 '),
+    ).toHaveLength(0)
   })
 
   it('shows feedback when the pinned key already exists', () => {

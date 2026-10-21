@@ -89,110 +89,153 @@ export function DiscoveryStateView({
 
   if (state.status === 'loading') {
     return (
-      <Card>
-        <div className="p-6 space-y-4">
-          <Heading
-            size="sm"
-            as="h3"
-            className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
-          >
-            Loading discovered keys…
-          </Heading>
-          <div className="space-y-3">
-            {Array.from({ length: 4 }).map((_, idx) => (
-              <div
-                key={idx}
-                className="h-10 rounded bg-white/5 border border-border-dark animate-pulse"
-              />
-            ))}
+      <>
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          Loading discovered keys.
+        </p>
+        <Card>
+          <div className="p-6 space-y-4">
+            <Heading
+              size="sm"
+              as="h3"
+              className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+            >
+              Loading discovered keys…
+            </Heading>
+            <div className="space-y-3">
+              {Array.from({ length: 4 }).map((_, idx) => (
+                <div
+                  key={idx}
+                  className="h-10 rounded bg-white/5 border border-border-dark animate-pulse"
+                />
+              ))}
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      </>
     )
   }
 
   if (state.status === 'empty') {
     const requestCount = state.requestedKeyCount
     return (
-      <Card>
-        <div className="p-6 space-y-3">
-          <Heading size="sm" as="h3" className="text-white">
-            No keys discovered yet
-          </Heading>
-          <p className="text-text-muted text-sm">
-            {emptyMessage ??
-              (requestCount === 0
-                ? 'No keys were requested for discovery.'
-                : `${requestCount} requested key${requestCount === 1 ? '' : 's'} produced no discoverable results.`)}
-          </p>
-        </div>
-      </Card>
+      <>
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          No keys discovered.
+        </p>
+        <Card>
+          <div className="p-6 space-y-3">
+            <Heading size="sm" as="h3" className="text-white">
+              No keys discovered yet
+            </Heading>
+            <p className="text-text-muted text-sm">
+              {emptyMessage ??
+                (requestCount === 0
+                  ? 'No keys were requested for discovery.'
+                  : `${requestCount} requested key${requestCount === 1 ? '' : 's'} produced no discoverable results.`)}
+            </p>
+          </div>
+        </Card>
+      </>
     )
   }
 
   if (state.status === 'error') {
     return (
-      <Card>
-        <div className="p-6 space-y-4 border border-red-500/20 bg-red-500/5 rounded-xl">
-          <Heading size="sm" as="h3" className="text-red-300">
-            Discovery failed
-          </Heading>
-          <p className="text-text-muted text-sm">
-            {state.error ?? 'An unknown error occurred while discovering keys.'}
-          </p>
-          {onRetry && (
-            <div>
-              <Button variant="secondary" size="sm" onClick={handleRetry}>
-                Retry
-              </Button>
-            </div>
-          )}
-        </div>
-      </Card>
+      <>
+        <p
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+        >
+          Discovery failed:{' '}
+          {state.error ?? 'An unknown error occurred while discovering keys.'}
+        </p>
+        <Card>
+          <div className="p-6 space-y-4 border border-red-500/20 bg-red-500/5 rounded-xl">
+            <Heading size="sm" as="h3" className="text-red-300">
+              Discovery failed
+            </Heading>
+            <p className="text-text-muted text-sm">
+              {state.error ??
+                'An unknown error occurred while discovering keys.'}
+            </p>
+            {onRetry && (
+              <div>
+                <Button variant="secondary" size="sm" onClick={handleRetry}>
+                  Retry
+                </Button>
+              </div>
+            )}
+          </div>
+        </Card>
+      </>
     )
   }
 
   return (
-    <div className="space-y-4">
-      <Heading
-        size="sm"
-        as="h2"
-        className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+    <>
+      <p
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
       >
-        Discovered Keys
-      </Heading>
+        Discovery complete. {keys.length} key{keys.length === 1 ? '' : 's'}{' '}
+        found.
+      </p>
+      <div className="space-y-4">
+        <Heading
+          size="sm"
+          as="h2"
+          className="text-text-muted uppercase tracking-widest text-[11px] font-bold"
+        >
+          Discovered Keys
+        </Heading>
 
-      <div className="grid gap-3">
-        {keys.length > 0 ? (
-          keys.map((item, idx) => (
-            <Card key={`${item.keyPath}-${idx}`}>
-              <div className="p-4 flex items-center justify-between gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-mono text-white truncate">
-                    {item.keyPath}
+        <div className="grid gap-3">
+          {keys.length > 0 ? (
+            keys.map((item, idx) => (
+              <Card key={`${item.keyPath}-${idx}`}>
+                <div className="p-4 flex items-center justify-between gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono text-white truncate">
+                      {item.keyPath}
+                    </div>
+                    <div className="text-xs text-text-muted mt-1">
+                      {item.type}
+                    </div>
                   </div>
-                  <div className="text-xs text-text-muted mt-1">
-                    {item.type}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <IconButton
+                      icon="pin"
+                      altText="Add to watchlist"
+                      onClick={() => onPinKey?.(item.keyPath)}
+                      aria-label="Add to watchlist"
+                    />
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <IconButton
-                    icon="pin"
-                    altText="Add to watchlist"
-                    onClick={() => onPinKey?.(item.keyPath)}
-                    aria-label="Add to watchlist"
-                  />
-                </div>
-              </div>
-            </Card>
-          ))
-        ) : (
-          <div className="text-center py-8 text-text-muted">
-            No keys discovered yet
-          </div>
-        )}
+              </Card>
+            ))
+          ) : (
+            <div className="text-center py-8 text-text-muted">
+              No keys discovered yet
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   )
 }
 

@@ -6,15 +6,17 @@ describe('getLatestLedgerConnectionCheck', () => {
   it('returns the latest ledger result for a reachable endpoint', async () => {
     const spy = vi
       .spyOn(rpcClient, 'callRpc')
-      .mockImplementation(async (_config, body) => ({
-        jsonrpc: '2.0',
-        id: (body as { id?: number }).id ?? 1,
-        result: {
-          id: 'abc123',
-          protocolVersion: 23,
-          sequence: 987654,
-        },
-      }))
+      .mockImplementation((_config, body) =>
+        Promise.resolve({
+          jsonrpc: '2.0',
+          id: (body as { id?: number }).id ?? 1,
+          result: {
+            id: 'abc123',
+            protocolVersion: 23,
+            sequence: 987654,
+          },
+        }),
+      )
 
     const result = await getLatestLedgerConnectionCheck('https://valid-rpc.com')
 
@@ -40,13 +42,15 @@ describe('getLatestLedgerConnectionCheck', () => {
     const signal = new AbortController().signal
     const spy = vi
       .spyOn(rpcClient, 'callRpc')
-      .mockImplementation(async (_config, body) => ({
-        jsonrpc: '2.0',
-        id: (body as { id?: number }).id ?? 1,
-        result: {
-          sequence: 123456,
-        },
-      }))
+      .mockImplementation((_config, body) =>
+        Promise.resolve({
+          jsonrpc: '2.0',
+          id: (body as { id?: number }).id ?? 1,
+          result: {
+            sequence: 123456,
+          },
+        }),
+      )
 
     await getLatestLedgerConnectionCheck('https://valid-rpc.com', {
       timeout: 1234,
@@ -107,15 +111,14 @@ describe('getLatestLedgerConnectionCheck', () => {
   })
 
   it('returns a handled failure for malformed success payloads', async () => {
-    vi.spyOn(rpcClient, 'callRpc').mockImplementation(
-      async (_config, body) =>
-        ({
-          jsonrpc: '2.0',
+    vi.spyOn(rpcClient, 'callRpc').mockImplementation((_config, body) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
         id: (body as { id?: number }).id ?? 1,
-          result: {
-            protocolVersion: 23,
-          },
-        }) as any,
+        result: {
+          protocolVersion: 23,
+        },
+      } as any),
     )
 
     const result = await getLatestLedgerConnectionCheck('https://weird-rpc.com')
@@ -132,15 +135,14 @@ describe('getLatestLedgerConnectionCheck', () => {
     { sequence: Number.NaN },
     { sequence: Number.POSITIVE_INFINITY },
   ])('rejects invalid ledger sequence $sequence', async ({ sequence }) => {
-    vi.spyOn(rpcClient, 'callRpc').mockImplementation(
-      async (_config, body) =>
-        ({
-          jsonrpc: '2.0',
+    vi.spyOn(rpcClient, 'callRpc').mockImplementation((_config, body) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
         id: (body as { id?: number }).id ?? 1,
-          result: {
-            sequence,
-          },
-        }) as any,
+        result: {
+          sequence,
+        },
+      } as any),
     )
 
     const result = await getLatestLedgerConnectionCheck('https://weird-rpc.com')
@@ -183,14 +185,16 @@ describe('getLatestLedgerConnectionCheck', () => {
   )
 
   it('accepts protocolVersion of zero', async () => {
-    vi.spyOn(rpcClient, 'callRpc').mockImplementation(async (_config, body) => ({
-      jsonrpc: '2.0',
-      id: (body as { id?: number }).id ?? 1,
-      result: {
-        sequence: 100,
-        protocolVersion: 0,
-      },
-    }))
+    vi.spyOn(rpcClient, 'callRpc').mockImplementation((_config, body) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: (body as { id?: number }).id ?? 1,
+        result: {
+          sequence: 100,
+          protocolVersion: 0,
+        },
+      }),
+    )
 
     const result = await getLatestLedgerConnectionCheck('https://valid-rpc.com')
 
@@ -201,13 +205,15 @@ describe('getLatestLedgerConnectionCheck', () => {
   })
 
   it('omits protocolVersion when the field is absent', async () => {
-    vi.spyOn(rpcClient, 'callRpc').mockImplementation(async (_config, body) => ({
-      jsonrpc: '2.0',
-      id: (body as { id?: number }).id ?? 1,
-      result: {
-        sequence: 100,
-      },
-    }))
+    vi.spyOn(rpcClient, 'callRpc').mockImplementation((_config, body) =>
+      Promise.resolve({
+        jsonrpc: '2.0',
+        id: (body as { id?: number }).id ?? 1,
+        result: {
+          sequence: 100,
+        },
+      }),
+    )
 
     const result = await getLatestLedgerConnectionCheck('https://valid-rpc.com')
 
@@ -249,14 +255,14 @@ describe('getLatestLedgerConnectionCheck', () => {
     // The adapter calls toRpcRequestId() which returns an incrementing integer.
     // We spy on callRpc to return a response whose id differs from the request id
     // captured by the adapter, verifying that the ID mismatch is rejected.
-    vi.spyOn(rpcClient, 'callRpc').mockImplementation(async (_config, body) => {
+    vi.spyOn(rpcClient, 'callRpc').mockImplementation((_config, body) => {
       const requestId = (body as { id?: number }).id
       // Return a response with a different id
-      return {
+      return Promise.resolve({
         jsonrpc: '2.0',
         id: (requestId ?? 0) + 1000,
         result: { sequence: 12345 },
-      }
+      })
     })
 
     const result = await getLatestLedgerConnectionCheck('https://valid-rpc.com')

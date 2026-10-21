@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, Card, Heading, IconButton } from '@stellar/design-system'
 import { Link } from '@tanstack/react-router'
+import { isSampleContractId } from '../../lib/demoContract'
 import { useLensStore } from '../../store/lensStore'
 import { buildInspectBreadcrumb } from './buildInspectBreadcrumb'
+import { LocalDemoNotice } from './LocalDemoNotice'
 import type { LedgerEntry } from '../../store/types'
 
 interface InspectShellProps {
@@ -29,7 +31,10 @@ export function InspectShell({
       (selected, candidate) => {
         const matchesPath =
           keyPath === candidate.key || keyPath.startsWith(`${candidate.key}.`)
-        if (candidate.contractId !== contractId || !matchesPath) {
+        if (
+          candidate.contractId !== (normalizedContractId || contractId) ||
+          !matchesPath
+        ) {
           return selected
         }
         return !selected || candidate.key.length > selected.key.length
@@ -53,7 +58,10 @@ export function InspectShell({
 
   const handlePinKey = () => {
     if (entry && keyPath) {
-      const added = addToWatchlist(contractId, entry.key)
+      const added = addToWatchlist(
+        normalizedContractId || contractId,
+        entry.key,
+      )
       setWatchlistFeedback(
         added ? 'Added to watchlist.' : 'Already in watchlist.',
       )
@@ -97,7 +105,12 @@ export function InspectShell({
           <Link
             to="/contracts/$contractId/explorer"
             params={{ contractId }}
-            search={{ keys: '' }}
+            search={{
+              keys: '',
+              mode: isSampleContractId(normalizedContractId || contractId)
+                ? 'demo'
+                : 'live',
+            }}
             aria-label="Back to explorer"
             className="text-sm text-primary hover:underline font-mono whitespace-nowrap"
           >
@@ -112,6 +125,10 @@ export function InspectShell({
           />
         </div>
       </header>
+
+      {isSampleContractId(normalizedContractId || contractId) && (
+        <LocalDemoNotice />
+      )}
 
       {watchlistFeedback ? (
         <p role="status" aria-live="polite" className="text-sm text-text-muted">

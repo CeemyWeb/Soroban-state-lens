@@ -1,4 +1,7 @@
-import { isDecoderWorkerError } from '../types/decoder-worker'
+import {
+  isDecoderWorkerError,
+  limitDecoderErrorDetail,
+} from '../types/decoder-worker'
 import { createDecoderWorkerSafe } from './createDecoderWorkerSafe'
 import {
   DEFAULT_DECODE_TIMEOUT_MS,
@@ -24,7 +27,7 @@ export function toRawXdrFallback(
   return {
     kind: 'raw-xdr',
     xdr,
-    reason: error.message,
+    reason: limitDecoderErrorDetail(error.message),
   }
 }
 

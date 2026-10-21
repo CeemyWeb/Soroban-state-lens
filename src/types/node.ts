@@ -40,12 +40,22 @@ export function appendPath(base: Path, segment: PathSegment): Path {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal representation of an ScVal suitable for raw metadata.
- * Matches the structure produced by stellar-sdk XDR parsing.
+ * Plain data values suitable for structured cloning and worker transport.
+ */
+export type RawValue =
+  | null
+  | boolean
+  | number
+  | string
+  | Array<RawValue>
+  | { [key: string]: RawValue }
+
+/**
+ * Minimal plain representation of an ScVal suitable for raw metadata.
  */
 export interface RawScVal {
   switch: string
-  value?: unknown
+  value?: RawValue
 }
 
 // ---------------------------------------------------------------------------

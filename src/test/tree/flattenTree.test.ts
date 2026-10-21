@@ -53,8 +53,33 @@ describe('flattenTree', () => {
     expect(rows[0]?.id).toBe('root')
   })
 
+  it('retains LedgerKey metadata only on the root row', () => {
+    const rows = flattenTree(
+      [
+        {
+          id: 'root',
+          label: 'root',
+          node: tree,
+          canonicalKey: 'original-key-xdr',
+          durability: 'Temporary',
+        },
+      ],
+      ['root'],
+    )
+
+    expect(rows[0]).toMatchObject({
+      canonicalKey: 'original-key-xdr',
+      durability: 'Temporary',
+    })
+    expect(rows[1]?.canonicalKey).toBeUndefined()
+    expect(rows[1]?.durability).toBeUndefined()
+  })
+
   it('shows direct descendants when root expanded', () => {
-    const rows = flattenTree([{ id: 'root', label: 'root', node: tree }], ['root'])
+    const rows = flattenTree(
+      [{ id: 'root', label: 'root', node: tree }],
+      ['root'],
+    )
     expect(rows.map((row) => row.id)).toEqual([
       'root',
       'root.entry-0-key',
@@ -116,10 +141,10 @@ describe('flattenTree', () => {
   })
 
   it('shows nested descendants deterministically', () => {
-    const rows = flattenTree([{ id: 'root', label: 'root', node: tree }], [
-      'root',
-      'root.entry-0-value',
-    ])
+    const rows = flattenTree(
+      [{ id: 'root', label: 'root', node: tree }],
+      ['root', 'root.entry-0-value'],
+    )
 
     expect(rows.map((row) => row.id)).toEqual([
       'root',
@@ -134,8 +159,21 @@ describe('flattenTree', () => {
 
   it('supports marker and unsupported node kinds', () => {
     const roots: Array<{ id: string; label: string; node: Node }> = [
-      { id: 'unsupported', label: 'unsupported', node: { kind: 'unsupported', path: [], variant: 'X', raw: { switch: 'ScvX' } } },
-      { id: 'truncated', label: 'truncated', node: { kind: 'truncated', path: [], depth: 7 } },
+      {
+        id: 'unsupported',
+        label: 'unsupported',
+        node: {
+          kind: 'unsupported',
+          path: [],
+          variant: 'X',
+          raw: { switch: 'ScvX' },
+        },
+      },
+      {
+        id: 'truncated',
+        label: 'truncated',
+        node: { kind: 'truncated', path: [], depth: 7 },
+      },
     ]
 
     const rows = flattenTree(roots, [])

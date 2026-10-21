@@ -7,7 +7,6 @@ welcome.
 
 - Node.js 20 or newer
 - Bun 1.0 or newer
-- Rust, required by the Rust-based XDR decoder
 
 Run `bun run check:env` to verify the Node.js and Bun versions.
 
@@ -20,6 +19,14 @@ bun install
 ```
 
 Start the development server with `bun run dev`.
+
+## Ledger decoding boundary
+
+Ledger entries arrive in RPC envelopes. Contract-data entries contain ScVal XDR
+that the app passes to `DecoderWorkerApi.decodeScVal`. The worker returns
+normalized values through Comlink, so its results must support structured clone.
+Keep RPC envelope fixtures separate from ScVal XDR fixtures when testing this
+boundary.
 
 ## Checks
 

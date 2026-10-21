@@ -15,13 +15,7 @@ export function LoadingSkeleton() {
         </h3>
 
         <div>
-          <div
-            role="status"
-            aria-live="polite"
-            aria-label="Loading explorer rows"
-          >
-            Loading explorer rows
-          </div>
+          <div>Loading explorer rows</div>
         </div>
 
         <div className="space-y-3">

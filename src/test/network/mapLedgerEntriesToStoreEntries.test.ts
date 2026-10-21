@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { xdr } from '@stellar/stellar-sdk'
 import { mapLedgerEntriesToStoreEntries } from '../../lib/network/mapLedgerEntriesToStoreEntries'
+import {
+  makeAccountFixture,
+  makeContractCodeFixture,
+  makeContractDataFixture,
+} from './ledgerEntryFixtures'
 
 function makeContractDataKey(durability: 'persistent' | 'temporary'): string {
   const ledgerKey = xdr.LedgerKey.contractData(
@@ -61,18 +66,55 @@ describe('mapLedgerEntriesToStoreEntries', () => {
       decodedValuesByKey: {
         'ledger-key-1': { kind: 'primitive', scType: 'string', value: 'hello' },
       },
+      keyInfoByKey: {
+        'ledger-key-1': { type: 'ContractData', displayName: 'counter' },
+      },
     })
 
     expect(result).toEqual([
       {
-        key: 'CONTRACT_1::Other::ledger-key-1',
+        key: 'CONTRACT_1::ContractData::ledger-key-1',
         contractId: 'CONTRACT_1',
-        type: 'Other',
+        type: 'ContractData',
+        displayName: 'counter',
         value: { kind: 'primitive', scType: 'string', value: 'hello' },
+        canonicalKey: 'ledger-key-1',
         lastModifiedLedger: 42,
         expirationLedger: 99,
         rawXdr: 'xdr-1',
       },
+    ])
+  })
+
+  it('classifies SDK-built ledger keys by their XDR variants', () => {
+    const contractDataKey = makeContractDataFixture().keyXdr
+    const contractCodeKey = makeContractCodeFixture().keyXdr
+    const accountKey = makeAccountFixture().keyXdr
+    const accountId = xdr.AccountId.publicKeyTypeEd25519(Buffer.alloc(32))
+    const trustlineKey = xdr.LedgerKey.trustline(
+      new xdr.LedgerKeyTrustLine({
+        accountId,
+        asset: xdr.TrustLineAsset.assetTypeNative(),
+      }),
+    ).toXDR('base64')
+
+    const mapped = mapLedgerEntriesToStoreEntries({
+      contractId: 'CONTRACT_XDR',
+      entries: [
+        { key: contractDataKey, xdr: 'contract-data-entry' },
+        { key: contractCodeKey, xdr: 'contract-code-entry' },
+        { key: accountKey, xdr: 'account-entry' },
+        { key: trustlineKey, xdr: 'trustline-entry' },
+        { key: 'malformed-key', xdr: 'malformed-entry' },
+      ],
+    })
+
+    expect(mapped.map((entry) => entry.type)).toEqual([
+      'ContractData',
+      'ContractCode',
+      'Account',
+      'Trustline',
+      'Other',
     ])
   })
 
@@ -102,11 +144,41 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_2',
         type: 'Other',
         value: 'xdr-2',
+        canonicalKey: 'ledger-key-2',
         lastModifiedLedger: 0,
         expirationLedger: undefined,
         rawXdr: 'xdr-2',
       },
     ])
+  })
+
+  it('classifies contract data from LedgerKey XDR and retains its raw key', () => {
+    const contract = xdr.ScAddress.scAddressTypeContract(new Uint8Array(32))
+    const ledgerKey = xdr.LedgerKey.contractData(
+      new xdr.LedgerKeyContractData({
+        contract,
+        key: xdr.ScVal.scvSymbol('temporary-key'),
+        durability: xdr.ContractDataDurability.temporary(),
+      }),
+    )
+    const keyXdr = ledgerKey.toXDR('base64')
+
+    const [entry] = mapLedgerEntriesToStoreEntries({
+      contractId: 'CONTRACT_TEMP',
+      entries: [{ key: keyXdr, xdr: 'entry-xdr' }],
+    })
+
+    expect(entry).toMatchObject({
+      key: `CONTRACT_TEMP::ContractData::${keyXdr}`,
+      type: 'ContractData',
+      durability: 'Temporary',
+      canonicalKey: keyXdr,
+    })
+    expect(
+      xdr.LedgerKey.fromXDR(entry.canonicalKey ?? '', 'base64')
+        .toXDR()
+        .toString('hex'),
+    ).toBe(ledgerKey.toXDR().toString('hex'))
   })
 
   it('maps multiple entries deterministically', () => {
@@ -146,6 +218,7 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_4',
         type: 'Other',
         value: { kind: 'primitive', scType: 'u64', value: '123' },
+        canonicalKey: 'ledger-key-4',
         lastModifiedLedger: 0,
         expirationLedger: undefined,
         rawXdr: 'xdr-4',
@@ -176,6 +249,7 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_5',
         type: 'Other',
         value: 'xdr-5',
+        canonicalKey: 'ledger-key-5',
         lastModifiedLedger: 7,
         expirationLedger: 10,
         rawXdr: 'xdr-5',
@@ -198,6 +272,7 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_6',
         type: 'Other',
         value: 'xdr-6',
+        canonicalKey: 'ledger-key-6',
         lastModifiedLedger: 3,
         expirationLedger: undefined,
         rawXdr: 'xdr-6',
@@ -223,6 +298,7 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_7',
         type: 'Other',
         value: { kind: 'primitive', scType: 'string', value: 'present' },
+        canonicalKey: 'decoded',
         lastModifiedLedger: 1,
         expirationLedger: undefined,
         rawXdr: 'xdr-decoded',
@@ -232,6 +308,7 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_7',
         type: 'Other',
         value: 'xdr-raw',
+        canonicalKey: 'raw',
         lastModifiedLedger: 2,
         expirationLedger: undefined,
         rawXdr: 'xdr-raw',
@@ -252,6 +329,7 @@ describe('mapLedgerEntriesToStoreEntries', () => {
         contractId: 'CONTRACT_8',
         type: 'Other',
         value: 'xdr-k',
+        canonicalKey: 'k',
         lastModifiedLedger: 5,
         expirationLedger: undefined,
         rawXdr: 'xdr-k',

@@ -3,6 +3,7 @@ import { parsePersistedNetworkConfig } from '../lib/storage/parsePersistedNetwor
 import { serializePersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
 import { validateNetworkConfigPatch } from './validateNetworkConfigPatch'
 import { normalizeNetworkScopeId } from './networkScope'
+import { setSnapshotPersistenceFailed } from './persistenceStatus'
 import { hydrateSnapshots } from './snapshotPersistence'
 import {
   BigIntDisplayMode,
@@ -19,8 +20,8 @@ import type {
   NetworkScopedContractBuckets,
   WatchlistItem,
 } from './types'
-import type { PersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
 import type { PersistedSnapshots } from './snapshotPersistence'
+import type { PersistedNetworkConfig } from '../lib/storage/serializePersistedNetworkConfig'
 import type { PersistStorage } from 'zustand/middleware'
 
 /**
@@ -178,7 +179,13 @@ const safeLocalStorage = {
         return
       }
       localStorage.setItem(name, value)
+      if (name === NETWORK_CONFIG_STORAGE_KEY) {
+        setSnapshotPersistenceFailed(false)
+      }
     } catch {
+      if (name === NETWORK_CONFIG_STORAGE_KEY) {
+        setSnapshotPersistenceFailed(true)
+      }
       console.warn(`[LensStore] Failed to write to localStorage: ${name}`)
     }
   },
@@ -283,12 +290,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function sanitizeSnapshotLedgerData(
   value: unknown,
   contractId: string,
-): Record<string, LedgerEntry> {
-  if (!isRecord(value)) return {}
+): { entries: Record<string, LedgerEntry>; rejectedEntries: number } {
+  if (!isRecord(value)) return { entries: {}, rejectedEntries: 1 }
 
   const entries: Record<string, LedgerEntry> = {}
+  let rejectedEntries = 0
   for (const [key, item] of Object.entries(value)) {
-    if (!isRecord(item)) continue
+    if (!isRecord(item)) {
+      rejectedEntries++
+      continue
+    }
 
     const validType =
       item.type === 'ContractData' ||
@@ -320,6 +331,7 @@ function sanitizeSnapshotLedgerData(
       ('decodeErrorReason' in item &&
         typeof item.decodeErrorReason !== 'string')
     ) {
+      rejectedEntries++
       continue
     }
 
@@ -341,7 +353,7 @@ function sanitizeSnapshotLedgerData(
         : {}),
     }
   }
-  return entries
+  return { entries, rejectedEntries }
 }
 
 function isJsonSerializableValue(
@@ -361,9 +373,9 @@ function isJsonSerializableValue(
     prototype !== null
   )
     return false
+  const values = Array.isArray(value) ? value : Object.values(value)
 
   ancestors.add(value)
-  const values = Array.isArray(value) ? value : Object.values(value)
   const valid = values.every((item) => isJsonSerializableValue(item, ancestors))
   ancestors.delete(value)
   return valid
@@ -399,12 +411,19 @@ export function sanitizeSnapshots(
       }
 
       const label = typeof item.label === 'string' ? item.label : undefined
+      const sanitizedLedgerData = sanitizeSnapshotLedgerData(
+        item.ledgerData,
+        contractId,
+      )
       validSnapshots.push({
         id: item.id,
         contractId,
         timestamp: item.timestamp,
         ledgerSequence: item.ledgerSequence,
-        ledgerData: sanitizeSnapshotLedgerData(item.ledgerData, contractId),
+        ledgerData: sanitizedLedgerData.entries,
+        ...(item.incomplete === true || sanitizedLedgerData.rejectedEntries > 0
+          ? { incomplete: true }
+          : {}),
         ...(label === undefined ? {} : { label }),
       })
     }

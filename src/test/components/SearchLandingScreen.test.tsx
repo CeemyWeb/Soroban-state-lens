@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SearchLandingScreen from '../../components/Home/SearchLandingScreen'
+import { SAMPLE_CONTRACT_ID } from '../../lib/demoContract'
 import { resetStore, useLensStore } from '../../store/lensStore'
 
 const mockNavigate = vi.fn()
@@ -26,8 +27,7 @@ describe('SearchLandingScreen recent history action', () => {
   })
 
   it('navigates to current history when an active contract is present', () => {
-    const contractId =
-      'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE'
+    const contractId = SAMPLE_CONTRACT_ID
     useLensStore.getState().setActiveContractId(contractId)
 
     render(<SearchLandingScreen />)
@@ -46,6 +46,20 @@ describe('SearchLandingScreen recent history action', () => {
     expect(
       screen.getByRole('textbox', { name: 'Contract ID or ledger key' }),
     ).toBeTruthy()
+  })
+
+  it('marks the sample explorer URL as local demo mode', () => {
+    render(<SearchLandingScreen />)
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /load sample contract/i }),
+    )
+
+    expect(mockNavigate).toHaveBeenCalledWith({
+      to: '/contracts/$contractId/explorer',
+      params: { contractId: SAMPLE_CONTRACT_ID },
+      search: { keys: '', mode: 'demo' },
+    })
   })
 
   it('disables wallet connection with clear unavailable status', () => {

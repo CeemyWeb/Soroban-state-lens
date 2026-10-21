@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { isSampleContractId } from '../demoContract'
 import { startLedgerHeadPoll } from './ledgerPoller'
 
 interface UseContractLedgerPollingParams {
@@ -15,6 +16,10 @@ export function useContractLedgerPolling({
   refreshActiveKeys,
 }: UseContractLedgerPollingParams): void {
   useEffect(() => {
+    if (isSampleContractId(contractId)) {
+      return
+    }
+
     let hasObservedInitialLedger = false
     const stop = startLedgerHeadPoll({
       rpcConfig: { url: rpcUrl, timeout: 10000 },

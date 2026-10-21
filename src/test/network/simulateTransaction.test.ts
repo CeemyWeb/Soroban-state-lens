@@ -281,7 +281,7 @@ describe('simulateTransaction request helper', () => {
     }
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => rpcResponse,
+      json: () => Promise.resolve(rpcResponse),
     } as Response)
 
     const result = await simulateTransaction({
@@ -375,7 +375,7 @@ describe('simulateTransaction request helper', () => {
     }
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => rpcResponse,
+      json: () => Promise.resolve(rpcResponse),
     } as Response)
 
     const result = await simulateTransaction({
@@ -395,7 +395,7 @@ describe('simulateTransaction request helper', () => {
     }
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => rpcResponse,
+      json: () => Promise.resolve(rpcResponse),
     } as Response)
 
     const result = await simulateTransaction({
@@ -427,7 +427,7 @@ describe('simulateTransaction request helper', () => {
   it('returns a handled error on malformed JSON-RPC', async () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => ({ not: 'rpc' }),
+      json: () => Promise.resolve({ not: 'rpc' }),
     } as Response)
 
     const result = await simulateTransaction({
@@ -483,11 +483,12 @@ describe('simulateTransaction request helper', () => {
     // toRpcRequestId is mocked to return 1; response carries id: 9999
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => ({
-        jsonrpc: '2.0',
-        id: 9999,
-        result: { latestLedger: 100, results: [] },
-      }),
+      json: () =>
+        Promise.resolve({
+          jsonrpc: '2.0',
+          id: 9999,
+          result: { latestLedger: 100, results: [] },
+        }),
     } as Response)
 
     const result = await simulateTransaction({
@@ -503,11 +504,12 @@ describe('simulateTransaction request helper', () => {
     // toRpcRequestId is mocked to return 1; response carries id: 9999
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
-      json: async () => ({
-        jsonrpc: '2.0',
-        id: 9999,
-        error: { code: -32600, message: 'Invalid Request' },
-      }),
+      json: () =>
+        Promise.resolve({
+          jsonrpc: '2.0',
+          id: 9999,
+          error: { code: -32600, message: 'Invalid Request' },
+        }),
     } as Response)
 
     const result = await simulateTransaction({

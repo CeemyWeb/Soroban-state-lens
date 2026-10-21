@@ -44,6 +44,25 @@ describe('Watchlist route', () => {
     expect(
       screen.getByText(/You do not have any pinned keys for this contract yet/),
     ).toBeTruthy()
+
+    const sectionNav = screen.getByRole('navigation', {
+      name: 'Contract sections',
+    })
+    expect(sectionNav.querySelectorAll('a')).toHaveLength(4)
+    expect(
+      screen.getByRole('link', { name: 'Explorer' }).getAttribute('href'),
+    ).toBe(`/contracts/${VALID_CONTRACT_ID}/explorer?keys=&mode=live`)
+    expect(
+      screen.getByRole('link', { name: 'Discovery' }).getAttribute('href'),
+    ).toBe(`/contracts/${VALID_CONTRACT_ID}/discovery`)
+    expect(
+      screen.getByRole('link', { name: 'History' }).getAttribute('href'),
+    ).toBe(`/contracts/${VALID_CONTRACT_ID}/history`)
+    expect(
+      screen
+        .getByRole('link', { name: 'Watchlist' })
+        .getAttribute('aria-current'),
+    ).toBe('page')
   })
 
   it('renders saved watchlist items and an inspect action', async () => {

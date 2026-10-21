@@ -10,7 +10,7 @@ export function redirectContractIndex(contractId: string): never {
   throw redirect({
     to: '/contracts/$contractId/explorer',
     params: { contractId: result.contractId },
-    search: { keys: '' },
+    search: { keys: '', mode: 'live' },
   })
 }
 

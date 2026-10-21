@@ -141,6 +141,18 @@ describe('wasmExtractor - extractContractspecv0', () => {
       }
     })
 
+    it('returns the first contractspecv0 payload when sections are repeated', () => {
+      const firstPayload = new TextEncoder().encode('first contract spec')
+      const secondPayload = new TextEncoder().encode('second contract spec')
+      let wasm = createEmptyWasmModule()
+      wasm = addCustomSection(wasm, 'contractspecv0', firstPayload)
+      wasm = addCustomSection(wasm, 'contractspecv0', secondPayload)
+
+      const result = extractContractspecv0(wasm)
+
+      expect(result).toEqual({ ok: true, payload: firstPayload })
+    })
+
     it('should handle large contractspecv0 payload', () => {
       const baseModule = createEmptyWasmModule()
       const largePayload = new Uint8Array(10000)
