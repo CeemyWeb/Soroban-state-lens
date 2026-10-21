@@ -81,11 +81,12 @@ describe('LensStore Hydration', () => {
     localStorage.setItem(NETWORK_CONFIG_STORAGE_KEY, savedState)
     await useLensStore.persist.rehydrate()
 
-    const [previous, next] = useLensStore.getState().getSnapshots('C1')
-    expect(previous).toBeDefined()
-    expect(next).toBeDefined()
-    if (!previous || !next) throw new Error('Snapshot pair was not restored')
-    const diff = diffSnapshotEntries(previous.ledgerData, next.ledgerData)
+    const snapshots = useLensStore.getState().getSnapshots('C1')
+    expect(snapshots).toHaveLength(2)
+    const diff = diffSnapshotEntries(
+      snapshots[0].ledgerData,
+      snapshots[1].ledgerData,
+    )
     expect(diff).toHaveLength(1)
     expect(diff[0]).toMatchObject({
       key: 'value',
